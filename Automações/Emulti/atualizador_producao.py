@@ -505,3 +505,6 @@ if __name__ == "__main__":
     app = AplicacaoGUI(root)
     root.protocol("WM_DELETE_WINDOW", app.fechar_aplicacao)
     root.mainloop()
+
+
+    

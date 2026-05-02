@@ -2,7 +2,7 @@ import os
 import re
 import pandas as pd
 from base import EstrategiaExtracao, extrair_texto_pdf, extrair_valor_da_secao_pdf
-from config import Cores, MAPA_REGRAS_PDF, PASTA_LOGS
+from config import Cores, MAPA_REGRAS_PDF
 from utils import registrar_log
 from excel_manager import atualizar_planilha_sisab_memoria
 
@@ -10,136 +10,164 @@ class PecAtividadeColetivaStrategy(EstrategiaExtracao):
     def __init__(self, texto): self.texto = texto
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de Atividade Coletiva.")
-        valor = extrair_valor_da_secao_pdf(self.texto, "Total de registros")
-        if valor == 0:
+        dados = {}
+        
+        # 19) PSE - Somatório das temáticas e procedimentos
+        termos_pse = {
+            "Ações de combate ao Aedes aegypti": r"Ações de combate ao Aedes aegypti[\s,]+(\d+)",
+            "Alimentação saudável": r"Alimentação saudável[\s,]+(\d+)",
+            "Outro procedimento coletivo": r"Outro procedimento coletivo[\s,]+(\d+)",
+            "Outros": r"Outros[\s,]+(\d+)",
+            "Não informado": r"Não informado[\s,]+(\d+)",
+            "PREVENÇÃO AO COVID-19 NAS ESCOLAS": r"(?:0101010095|PREVEN(?:C|Ç)(?:A|Ã)O AO COVID-19 NAS ESCOLAS)[\s,]+(\d+)"
+        }
+        
+        soma_pse = 0
+        termos_encontrados = []
+        for nome_termo, padrao in termos_pse.items():
+            matches = re.findall(padrao, self.texto, re.IGNORECASE)
+            valor_termo = sum(int(m) for m in matches)
+            if valor_termo > 0:
+                soma_pse += valor_termo
+                termos_encontrados.append(f"{nome_termo} ({valor_termo})")
+                
+        if soma_pse > 0:
+            dados["PSE"] = soma_pse
+            registrar_log(f"   [+] SOMA PSE REALIZADA: {soma_pse} -> {', '.join(termos_encontrados)}", Cores.VERDE)
+
+        # Resumo Geral da Atividade Coletiva
+        val_geral = extrair_valor_da_secao_pdf(self.texto, "Total de registros")
+        if val_geral == 0:
             match = re.search(r"Total:\s*(\d+)", self.texto, re.IGNORECASE)
-            if match: valor = int(match.group(1))
-        return {"ATIVIDADE COLETIVA": valor} if valor > 0 else {}
+            if match: val_geral = int(match.group(1))
+        if val_geral > 0:
+            dados["ATIVIDADE COLETIVA"] = val_geral
+
+        return dados
 
 class PecVisitaDomiciliarStrategy(EstrategiaExtracao):
     def __init__(self, texto): self.texto = texto
+    
     def extrair(self):
-        registrar_log("ℹ️ Detectado: Relatório de Visita Domiciliar.")
-        valor = extrair_valor_da_secao_pdf(self.texto, "Registros identificados")
-        return {"VISITA DE ACS": valor} if valor > 0 else {}
+        registrar_log("ℹ️ Detectado: Relatório de visita domiciliar e territorial.")
+        
+        # O Regex OBRIGA que os valores estejam logo após o título "Resumo de produção"
+        padrao = r"Resumo de produ[cç][aã]o[\s\S]{0,150}?Registros identificados[\W_]+(\d+)[\s\S]{0,150}?Registros n[aã]o identificados[\W_]+(\d+)"
+        
+        match = re.search(padrao, self.texto, re.IGNORECASE)
+        
+        if match:
+            val_id = int(match.group(1))   
+            val_nid = int(match.group(2))  
+            total = val_id + val_nid       
+            
+            registrar_log(f"   [+] SOMA VISITAS ACS REALIZADA (Resumo de Produção): Identificados ({val_id}) + Não Identificados ({val_nid}) = {total}", Cores.VERDE)
+            
+            return {"VISITA DE ACS": total}
+        
+        registrar_log("   [-] ATENÇÃO: Bloco 'Resumo de produção' não encontrado corretamente no PDF.", Cores.AMARELO)
+        return {}
 
 class PecCadastroIndividualStrategy(EstrategiaExtracao):
     def __init__(self, texto): self.texto = texto
     def extrair(self):
-        registrar_log("ℹ️ Detectado: Relatório de Cadastro Individual.")
+        registrar_log("ℹ️ Detectado: Relatório de cadastro individual.")
+        # 21) ANÁLISE DA SITUAÇÃO CADASTRAL
         valor = extrair_valor_da_secao_pdf(self.texto, "Cidadãos ativos")
         return {"ANÁLISE DA SITUAÇÃO CADASTRAL": valor} if valor > 0 else {}
 
 class PecMarcadorConsumoStrategy(EstrategiaExtracao):
     def __init__(self, texto): self.texto = texto
     def extrair(self):
-        registrar_log("ℹ️ Detectado: Relatório de Marcadores de Consumo.")
-        valor = extrair_valor_da_secao_pdf(self.texto, "Registros identificados")
-        return {"MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS E NO IDS)": valor} if valor > 0 else {}
+        registrar_log("ℹ️ Detectado: Relatório de marcadores de consumo alimentar.")
+        # 22) MARCADOR DE CONSUMO ALIMENTAR: Somar Identificados e Não Identificados
+        val_id = extrair_valor_da_secao_pdf(self.texto, "Registros identificados")
+        val_nid = extrair_valor_da_secao_pdf(self.texto, "Registros não identificados")
+        total = val_id + val_nid
+        
+        if total > 0:
+            registrar_log(f"   [+] SOMA MARCADORES REALIZADA: Identificados ({val_id}) + Não Identificados ({val_nid})", Cores.VERDE)
+            return {"MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS E NO IDS)": total}
+        return {}
 
 class PecAtendimentoProcedimentoStrategy(EstrategiaExtracao):
     def __init__(self, texto, categoria): 
         self.texto = texto
-        self.categoria = categoria.title() # Ex: "Médico", "Enfermeiro"
+        self.categoria = categoria.upper()
+
+    def _extrair_valor(self, padrao, tipo="simples"):
+        # Tipo "simples": Pega a primeira ocorrência numérica à frente da palavra.
+        # Tipo "avaliado": Pega a segunda ocorrência (para pular a coluna "Solicitado"). Se só tiver uma, pega ela.
+        matches = re.findall(padrao + r"[\s,]+(\d+)(?:[\s,]+(\d+))?", self.texto, re.IGNORECASE)
+        total = 0
+        for m in matches:
+            if tipo == "avaliado" and m[1]: 
+                total += int(m[1])
+            else: 
+                total += int(m[0])
+        return total
 
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de Atendimento/Procedimentos e Exames.")
         dados_extraidos = {}
         
-        # Mapeamento expandido de Regex focando no layout do PEC
-        mapeamento_regex = {
-            # Atendimentos Básicos
-            "ATENDIMENTO GERAL": r"Registros identificados[\s,]+(\d+)",
-            "DIABETES": r"Diabetes[\s,]+(\d+)",
-            "HIPERTENSÃO": r"Hipertensão arterial[\s,]+(\d+)",
-            "PRÉ-NATAL": r"Pré-natal[\s,]+(\d+)",
-            "PUERICULTURA": r"Puericultura[\s,]+(\d+)",
-            "PUERPERAL (até 42 dias)": r"Puerpério \(até 42 dias\)[\s,]+(\d+)",
-            "SAUDE SEXUAL E REPRODUTIVA": r"Saúde sexual e reprodutiva[\s,]+(\d+)",
-            "RASTREAMENTO CANCER DE CMA": r"Câncer de mama[\s,]+(\d+)",
-            "RASTREAMENTO CANCER DE CCU": r"(?:Câncer do colo do útero|0201020033).*?[\s,]+(\d+)",
-            "ATEND. DOMICILIAR": r"Domicílio[\s,]+(\d+)",
-            
-            # Exames e Solicitações
-            "SOLICITAÇÃO HEMOGLOBINA GLICADA": r"Hemoglobina glicada[\s,]+(\d+)",
-            "SOROLOGIA HIV (PN": r"Sorologia para HIV[\s,]+(\d+)",
-            "SOROLOGIA SIFILIS (PN": r"Sorologia de sífilis \(VDRL\)[\s,]+(\d+)",
-            "TESTE DO PEZINHO": r"Teste do pezinho[\s,]+(\d+)",
-            
-            # Procedimentos (Novos Adicionados)
-            "PREVENTIVO GINECOLÓGICO": r"Coleta de material(?:.*?)?citopatológico.*?[\s,]+(\d+)",
-            "AFERIÇÃO DE PRESSÃO": r"Aferição de pressão.*?[\s,]+(\d+)",
-            "CURATIVOS": r"Curativo.*?[\s,]+(\d+)",
-            "TESTE RÁPIDO SIFILIS": r"Teste rápido para sífilis.*?[\s,]+(\d+)",
-            "TESTE RÁPIDO HIV": r"Teste rápido para HIV.*?[\s,]+(\d+)"
+        # --- REGRAS SIMPLES E DIRETAS (Itens 1 ao 10 e 16 ao 18) ---
+        regras_simples = {
+            "ATENDIMENTO GERAL": r"Registros identificados", 
+            "RASTREAMENTO CANCER DE CMA": r"Câncer de mama", 
+            "RASTREAMENTO CANCER DE CCU": r"Câncer do colo do útero", 
+            "PUERICULTURA": r"Puericultura", 
+            "DIABETES": r"Diabetes", 
+            "HIPERTENSÃO": r"Hipertensão arterial", 
+            "PRÉ-NATAL": r"Pré-natal", 
+            "PUERPERAL (até 42 dias)": r"Puerpério \(até 42 dias\)", 
+            "SAUDE SEXUAL E REPRODUTIVA": r"Saúde sexual e reprodutiva", 
+            "ATEND. DOMICILIAR": r"Domicílio", 
+            # Exames de Solicitação (Pega a 1ª coluna - "Solicitado")
+            "SOLICITAÇÃO HEMOGLOBINA GLICADA - OLHAR SÓ NO E-SUS E NO IDS": r"Hemoglobina glicada", 
+            "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS E NO IDS)": r"Sorologia para HIV", 
+            "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS E NO IDS)": r"Sorologia de sífilis \(VDRL\)" 
         }
 
-        for chave_base, padrao in mapeamento_regex.items():
-            # Exceção da Saúde Mental mantida
-            if "MENTAL" in chave_base.upper(): continue
-            
-            # findall é usado para achar todas as ocorrências e viabilizar as somas exigidas na planilha
-            matches = re.findall(padrao, self.texto, re.IGNORECASE)
-            if matches:
-                valor_total = 0
-                for match in matches:
-                    # Captura do dado numérico, ignorando textos acidentais do PDF
-                    num = match[0] if isinstance(match, tuple) else match
-                    if str(num).strip().isdigit():
-                        valor_total += int(str(num).strip())
+        for chave, padrao in regras_simples.items():
+            val = self._extrair_valor(padrao, tipo="simples")
+            if val > 0:
+                # Acrescenta a categoria se a chave não tiver sufixo especial
+                chave_final = f"{chave} ({self.categoria})" if "OLHAR SÓ" not in chave and chave != "ATENDIMENTO GERAL" else chave
+                dados_extraidos[chave_final] = val
 
-                if valor_total > 0:
-                    chave_final = None
-                    chave_base_limpa = chave_base.lower().replace(" ", "").replace(".", "")
-                    cat_limpa = self.categoria.lower()
-                    
-                    # Define quais itens na planilha não levam o nome do profissional (Médico/Enfermeiro)
-                    itens_sem_categoria = [
-                        "puerperal", "saudesexual", "rastreamento", "preventivo", 
-                        "aferição", "testerápido", "curativos", "testedopezinho"
-                    ]
-                    precisa_categoria = not any(x in chave_base_limpa for x in itens_sem_categoria)
+        # --- EXAMES AVALIADOS E PROCEDIMENTOS (Itens 11, 12, 14) ---
+        regras_avaliados = {
+            "PREVENTIVO GINECOLÓGICO": r"(?:Coleta de citopatológico de colo uterino|0201020033.*?CITOPATOL[OÓ]GICO)", 
+            "AFERIÇÃO DE PRESSÃO": r"(?:AFERI(?:C|Ç)(?:A|Ã)O DE PRESS(?:A|Ã)O ARTERIAL|0301100039)", 
+            "TESTE DO PEZINHO": r"(?:COLETA DE SANGUE PARA TRIAGEM NEONATAL|0201020050)" 
+        }
+        
+        for chave, padrao in regras_avaliados.items():
+            val = self._extrair_valor(padrao, tipo="avaliado")
+            if val > 0:
+                dados_extraidos[f"{chave} ({self.categoria})"] = val
 
-                    # Auto-Matcher para encontrar a chave invisível ou com quebra de linha do Excel
-                    for chave_real in MAPA_REGRAS_PDF.keys():
-                        chave_real_limpa = str(chave_real).lower().replace(" ", "").replace("\n", "").replace("\r", "")
-                        
-                        if chave_base_limpa in chave_real_limpa:
-                            if precisa_categoria:
-                                if cat_limpa in chave_real_limpa:
-                                    chave_final = chave_real
-                                    break
-                            else:
-                                chave_final = chave_real
-                                break
+        # --- SOMATÓRIOS ESPECIAIS (Itens 13 e 15) ---
+        
+        # 13) TESTE RÁPIDO SIFILIS
+        val_sifilis_normal = self._extrair_valor(r"Teste rápido para sífilis(?!\s+na gestante)", tipo="avaliado")
+        val_sifilis_gestante = self._extrair_valor(r"Teste rápido para sífilis na gestante ou pai/parceiro", tipo="avaliado")
+        soma_sifilis = val_sifilis_normal + val_sifilis_gestante
+        if soma_sifilis > 0:
+            dados_extraidos[f"TESTE RÁPIDO SIFILIS ({self.categoria})"] = soma_sifilis
+            registrar_log(f"   [+] SOMA TESTE SÍFILIS REALIZADA: Normal ({val_sifilis_normal}) + Gestante ({val_sifilis_gestante})", Cores.VERDE)
 
-                    # Sistema de segurança (Fallback) caso o mapa falhe
-                    if not chave_final:
-                        if "HEMOGLOBINA" in chave_base or "SOROLOGIA" in chave_base:
-                            chave_final = f"{chave_base} - OLHAR SÓ NO E-SUS E NO IDS) - {self.categoria.upper()}"
-                        elif precisa_categoria:
-                            chave_final = f"{chave_base} ({self.categoria})"
-                        else:
-                            chave_final = chave_base
-                            
-                    dados_extraidos[chave_final] = dados_extraidos.get(chave_final, 0) + valor_total
+        # 15) CURATIVOS
+        val_curativo_simples = self._extrair_valor(r"(?:CURATIVO SIMPLES|0301100284)", tipo="avaliado")
+        val_curativo_especial = self._extrair_valor(r"(?:Curativo especial|0301100276)", tipo="avaliado")
+        soma_curativos = val_curativo_simples + val_curativo_especial
+        if soma_curativos > 0:
+            dados_extraidos[f"CURATIVOS ({self.categoria})"] = soma_curativos
+            registrar_log(f"   [+] SOMA CURATIVOS REALIZADA: Simples ({val_curativo_simples}) + Especial ({val_curativo_especial})", Cores.VERDE)
 
-        # Mantém a leitura secundária do MAPA original para não quebrar outras lógicas
-        chaves_especiais = ["ATIVIDADE COLETIVA", "VISITA DE ACS", "ANÁLISE DA SITUAÇÃO CADASTRAL", "MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS E NO IDS)"]
-        for chave_planilha, (secao, termo_busca_config, metodo) in MAPA_REGRAS_PDF.items():
-            if chave_planilha in chaves_especiais or "MENTAL" in str(chave_planilha).upper(): continue
-            if chave_planilha in dados_extraidos: continue
-
-            valor_final = 0
-            if isinstance(termo_busca_config, list):
-                for termo in termo_busca_config:
-                    valor_final += extrair_valor_da_secao_pdf(self.texto, termo, metodo)
-            elif isinstance(termo_busca_config, str):
-                valor_final = extrair_valor_da_secao_pdf(self.texto, termo_busca_config, metodo)
-                
-            if valor_final > 0: dados_extraidos[chave_planilha] = valor_final
-                
         return dados_extraidos
+
 
 class ContextoPec:
     def __init__(self, caminho_arquivo, wb, mapa_abas):
@@ -153,23 +181,14 @@ class ContextoPec:
         texto_bruto = extrair_texto_pdf(self.caminho)
         if not texto_bruto: return
 
-        try:
-            with open(os.path.join(PASTA_LOGS, f"DEBUG_{self.nome_arquivo}.txt"), "w", encoding="utf-8") as f:
-                f.write(texto_bruto)
-        except: pass
-
         mes_atual, categoria, unidade = self._extrair_metadados_comuns(texto_bruto)
-        
         if not all([unidade, categoria]) or mes_atual == "MÊS NÃO IDENTIFICADO":
             registrar_log(f"❌ Falha ao extrair dados essenciais.", Cores.VERMELHO)
             return
 
         registrar_log(f"ℹ️ Unidade: {unidade} | Categoria: {categoria} | Mês: {mes_atual}", Cores.CIANO)
-
-        # ALTERAÇÃO: Passando a categoria para a estratégia
         estrategia = self._selecionar_estrategia(texto_bruto, categoria)
         dados_brutos = estrategia.extrair()
-
         dados_para_lancar = {}
         categoria_pdf = categoria.lower()
         
@@ -188,26 +207,21 @@ class ContextoPec:
 
         if dados_para_lancar:
             for chave, valor in dados_para_lancar.items():
-                indicador_limpo = str(chave).replace('\n', ' ').replace('\r', '').strip()
-                valor_limpo = str(valor).replace('\n', '').replace('\r', '').strip()
-                
-                print(f"DADO_EXTRAIDO|PEC|{unidade}|{indicador_limpo}|{valor_limpo}|{mes_atual}", flush=True)            
-
+                print(f"DADO_EXTRAIDO|PEC|{unidade}|{str(chave).replace(chr(10), ' ').strip()}|{valor}|{mes_atual}", flush=True)            
             atualizar_planilha_sisab_memoria(dados_para_lancar, mes_atual, self.nome_arquivo, self.wb, self.mapa_abas)
         else:
             registrar_log(f"⚠️ Nenhum dado relevante a ser lançado.", Cores.AMARELO)
 
-    # ALTERAÇÃO: O método _selecionar_estrategia agora envia a categoria
     def _selecionar_estrategia(self, texto, categoria=""):
-        if re.search(r"Relatório de atividade coletiva", texto, re.IGNORECASE):
+        if re.search(r"Relatório de atividade coletiva", texto, re.IGNORECASE): 
             return PecAtividadeColetivaStrategy(texto)
-        elif re.search(r"Relatório de visita domiciliar e territorial", texto, re.IGNORECASE):
+        elif re.search(r"Relatório de visita domiciliar e territorial", texto, re.IGNORECASE): 
             return PecVisitaDomiciliarStrategy(texto)
-        elif re.search(r"Relatório de cadastro individual", texto, re.IGNORECASE):
+        elif re.search(r"Relatório de cadastro individual", texto, re.IGNORECASE): 
             return PecCadastroIndividualStrategy(texto)
-        elif re.search(r"Relatório de marcadores de consumo alimentar", texto, re.IGNORECASE):
+        elif re.search(r"Relatório de marcadores de consumo alimentar", texto, re.IGNORECASE): 
             return PecMarcadorConsumoStrategy(texto)
-        else:
+        else: 
             return PecAtendimentoProcedimentoStrategy(texto, categoria)
 
     def _extrair_metadados_comuns(self, texto):
@@ -217,18 +231,14 @@ class ContextoPec:
         elif "Categoria profissional: ODONTÓLOGO" in texto: categoria = "ODONTO"
         elif "Categoria profissional: AGENTE COMUNITÁRIO DE SAÚDE" in texto: categoria = "ACS" 
 
-        meses = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
         mes_atual = "MÊS NÃO IDENTIFICADO"
-        match_periodo = re.search(r"Período: (\d{2}/\d{2}/\d{4})", texto)
-        match_data = re.search(r"Data: (\d{2}/\d{2}/\d{4})", texto) 
-
-        match_valido = match_periodo or match_data
+        meses = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
+        match_valido = re.search(r"Período: (\d{2}/\d{2}/\d{4})", texto) or re.search(r"Data: (\d{2}/\d{2}/\d{4})", texto) 
         if match_valido:
-            try:
-                mes_num = pd.to_datetime(match_valido.group(1), dayfirst=True).month
-                mes_atual = meses[mes_num - 1]
-            except: pass
+            try: 
+                mes_atual = meses[pd.to_datetime(match_valido.group(1), dayfirst=True).month - 1]
+            except: 
+                pass
         
         unidade = os.path.splitext(self.nome_arquivo)[0].upper().strip()
-        
         return mes_atual, categoria, unidade

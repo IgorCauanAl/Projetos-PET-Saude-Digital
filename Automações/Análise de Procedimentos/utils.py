@@ -1,6 +1,8 @@
 import os
 import re
 import unicodedata
+import shutil
+import glob
 from datetime import datetime
 from config import Cores
 
@@ -33,15 +35,48 @@ def registrar_log(mensagem, cor_terminal=None):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {mensagem}")
 
 def normalizar_texto(texto):
-    """
-    Remove acentos e caracteres especiais, mantendo letras, números e espaços.
-    """
     if not texto: return ""
     texto = str(texto).upper()
     nfkd = unicodedata.normalize('NFD', texto)
     sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    # O \s na Regex (Expressão Regular) permite manter os espaços em branco
     texto_limpo = re.sub(r'[^A-Z0-9\s]', '', sem_acento).strip()
-    # Remove espaços duplos acidentais
     texto_limpo = re.sub(r'\s+', ' ', texto_limpo)
     return texto_limpo
+
+def realizar_backup_planilha(caminho_planilha):
+    """
+    Realiza o backup da planilha adicionando a data e hora.
+    Mantém apenas os 10 backups mais recentes para poupar espaço.
+    """
+    if not os.path.exists(caminho_planilha):
+        registrar_log("⚠️ Arquivo original não encontrado para backup.", Cores.AMARELO)
+        return False
+        
+    pasta_backup = os.path.join(os.path.dirname(caminho_planilha), "Cópia")
+    os.makedirs(pasta_backup, exist_ok=True)
+    
+    # CORREÇÃO 1: A variável timestamp é criada antes de ser usada!
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    nome_arquivo_original = os.path.basename(caminho_planilha)
+
+    nome_base, extensao = os.path.splitext(nome_arquivo_original)
+    nome_backup = f"Copia_{timestamp}{extensao}"
+    caminho_backup = os.path.join(pasta_backup, nome_backup)
+    
+    try:
+        shutil.copy2(caminho_planilha, caminho_backup)
+        registrar_log(f"💾 Backup de segurança criado: {nome_backup}", Cores.VERDE)
+        
+        # CORREÇÃO 2: Padrão de busca corrigido para encontrar os ficheiros 'Copia_...'
+        padrao_busca = os.path.join(pasta_backup, f"Copia_*{extensao}")
+        arquivos_backup = sorted(glob.glob(padrao_busca), key=os.path.getmtime)
+        
+        while len(arquivos_backup) > 10:
+            arquivo_antigo = arquivos_backup.pop(0)
+            os.remove(arquivo_antigo)
+            registrar_log(f"♻️ Expurgo de backup antigo: {os.path.basename(arquivo_antigo)}", Cores.AMARELO)
+            
+        return True
+    except Exception as e:
+        registrar_log(f"❌ Falha crítica ao criar backup: {e}", Cores.VERMELHO)
+        return False

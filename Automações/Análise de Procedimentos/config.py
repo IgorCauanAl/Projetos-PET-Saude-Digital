@@ -1,7 +1,6 @@
 import os
 
 # === CONFIGURAÇÕES VISUAIS DO TERMINAL ===
-# As cores foram desativadas (vazias) para não bugar a interface gráfica do Tkinter
 class Cores:
     RESET = ''
     VERMELHO = ''
@@ -14,15 +13,28 @@ class Cores:
     NEGRITO = ''
     FUNDO_VERMELHO = ''
 
-# === CONFIGURAÇÕES DE DIRETÓRIO ===
-PASTA_MONITORADA = r"C:\Users\win10\Desktop\analise"
+#configuracao universal do diretorio
+HOME_USER = os.path.expanduser("~")
+
+# Lista de possíveis nomes para a pasta
+possiveis_nomes = ["Desktop", "Área de Trabalho", "Area de Trabalho"]
+pasta_desktop = None
+
+for nome in possiveis_nomes:
+    caminho_teste = os.path.join(HOME_USER, nome)
+    if os.path.exists(caminho_teste):
+        pasta_desktop = caminho_teste
+        break
+
+# Caso o Windows use um padrão muito diferente
+if not pasta_desktop:
+    pasta_desktop = os.path.join(HOME_USER, "Desktop")
+
+PASTA_MONITORADA = os.path.join(pasta_desktop, "analise")
 PLANILHA_ANALISE = os.path.join(PASTA_MONITORADA, "analise.xlsx")
-PASTA_LOGS = os.path.join(PASTA_MONITORADA, "logs")
 
-if not os.path.exists(PASTA_LOGS):
-    os.makedirs(PASTA_LOGS)
 
-# === MAPAS DE REGRAS ===
+# Regras gerais
 MAPA_REGRAS_PDF = {
     "ATENDIMENTO GERAL\n (Médico)": ("geral", "Registros identificados", "simples"),
     "ATENDIMENTO GERAL\n (Enfermeiro)": ("geral", "Registros identificados", "simples"),
@@ -59,7 +71,6 @@ MAPA_REGRAS_PDF = {
     "MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS E NO IDS)": ("geral", "dummy_term", "simples"),
     "ANÁLISE DA SITUAÇÃO CADASTRAL": ("geral", "dummy_term", "simples"),
 }
-
 
 MAPA_CONDICOES_SISAB = {
     "Pré-natal": {"Médico": "PRÉ-NATAL (Médico)", "Enfermeiro": "PRÉ-NATAL (Enfermeiro)"},

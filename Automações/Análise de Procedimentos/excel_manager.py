@@ -60,7 +60,8 @@ def atualizar_planilha_sisab_memoria(dados_por_ine, mes_atual, nome_arquivo, wb,
         else:
             registrar_log(f"❌ Não vinculei o PDF: {nome_arquivo}", Cores.VERMELHO)
             for ind, val in dados_por_ine.items():
-                print(f"UI_RESULTADO|FALHA_INE|None|{nome_arquivo}|{ind}|{val}|{mes_atual}")
+                # Envia '-' no valor da planilha para casos de falha
+                print(f"UI_RESULTADO|FALHA_INE|None|{nome_arquivo}|{ind}|{val}|-|{mes_atual}")
             return
 
     # 3. LAÇO DE GRAVAÇÃO NA PLANILHA
@@ -97,7 +98,7 @@ def atualizar_planilha_sisab_memoria(dados_por_ine, mes_atual, nome_arquivo, wb,
 
         if not sheet_name:
             for ind_alvo in indicadores_alvo:
-                print(f"UI_RESULTADO|FALHA_INE|{ine} ({nome_posto_sisab})|DESCONHECIDO|{ind_alvo}|{valor_novo}|{mes_atual}")
+                print(f"UI_RESULTADO|FALHA_INE|{ine} ({nome_posto_sisab})|DESCONHECIDO|{ind_alvo}|{valor_novo}|-|{mes_atual}")
             continue
         
         ws = wb[sheet_name]
@@ -119,7 +120,7 @@ def atualizar_planilha_sisab_memoria(dados_por_ine, mes_atual, nome_arquivo, wb,
         
         if not col_mes_inicio:
             for ind_alvo in indicadores_alvo:
-                print(f"UI_RESULTADO|FALHA_MES|{ine}|{sheet_name}|{ind_alvo}|{valor_novo}|{mes_atual}")
+                print(f"UI_RESULTADO|FALHA_MES|{ine}|{sheet_name}|{ind_alvo}|{valor_novo}|-|{mes_atual}")
             continue
 
         for col in range(col_mes_inicio, col_mes_inicio + 10):
@@ -163,10 +164,8 @@ def atualizar_planilha_sisab_memoria(dados_por_ine, mes_atual, nome_arquivo, wb,
             
             if linha_destino:
                 # LÓGICA DE SOMAGEM:
-                # Obtém o valor que já está na célula
                 valor_atual_celula = ws.cell(row=linha_destino, column=col_final).value
                 
-                # Tratamento para garantir que ambos sejam números antes da soma
                 try:
                     v_atual = float(valor_atual_celula) if valor_atual_celula is not None else 0.0
                 except (ValueError, TypeError):
@@ -181,9 +180,10 @@ def atualizar_planilha_sisab_memoria(dados_por_ine, mes_atual, nome_arquivo, wb,
                 
                 # Grava o resultado somado
                 ws.cell(row=linha_destino, column=col_final, value=resultado_soma)
-                print(f"UI_RESULTADO|SUCESSO|{ine}|{sheet_name}|{indicador_alvo}|{resultado_soma}|{mes_atual}")
+                # Envia Valor Doc (v_novo) e Valor Planilha (resultado_soma)
+                print(f"UI_RESULTADO|SUCESSO|{ine}|{sheet_name}|{indicador_alvo}|{valor_novo}|{resultado_soma}|{mes_atual}")
             else:
-                print(f"UI_RESULTADO|FALHA_LINHA|{ine}|{sheet_name}|{indicador_alvo}|{valor_novo}|{mes_atual}")
+                print(f"UI_RESULTADO|FALHA_LINHA|{ine}|{sheet_name}|{indicador_alvo}|{valor_novo}|-|{mes_atual}")
 
 def indicadores_unicos_da_lista(lista):
     """Remove indicadores duplicados preservando a ordem da lista."""

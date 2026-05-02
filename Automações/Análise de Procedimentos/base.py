@@ -4,10 +4,12 @@ from abc import ABC, abstractmethod
 from utils import registrar_log
 from config import Cores
 
+# Cache global para expressões regulares otimizando uso de CPU
+_regex_cache = {}
+
 class EstrategiaExtracao(ABC):
     @abstractmethod
     def extrair(self):
-        """Método obrigatório que retorna os dados extraídos."""
         pass
 
 def extrair_texto_pdf(caminho_pdf):
@@ -25,6 +27,11 @@ def extrair_texto_pdf(caminho_pdf):
 def extrair_valor_da_secao_pdf(texto_secao, termo_busca, metodo="simples"):
     if not texto_secao: return 0
     termo_flexivel = termo_busca.replace(" ", r"\s+")
-    padrao = re.compile(f"{termo_flexivel}.*?(\\d+)", re.IGNORECASE | re.MULTILINE)
+    
+    # Busca a regex no cache, se não existir, compila e salva
+    if termo_flexivel not in _regex_cache:
+        _regex_cache[termo_flexivel] = re.compile(f"{termo_flexivel}.*?(\\d+)", re.IGNORECASE | re.MULTILINE)
+        
+    padrao = _regex_cache[termo_flexivel]
     match = padrao.search(texto_secao)
     return int(match.group(1)) if match else 0

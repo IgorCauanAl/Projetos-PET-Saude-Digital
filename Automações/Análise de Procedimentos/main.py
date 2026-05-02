@@ -12,20 +12,13 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from openpyxl import load_workbook
 
-# Configurações e Utilitários do projeto
 from config import PASTA_MONITORADA, PLANILHA_ANALISE, Cores
-from utils import imprimir_banner_inicial, registrar_log
-
-# Importando a função ÚNICA de mapeamento
+from utils import imprimir_banner_inicial, registrar_log, realizar_backup_planilha
 from excel_manager import mapear_ine_para_abas
-
-# Importações das estratégias de extração
 from sisab_strategies import ContextoSisab
 from pec_strategies import ContextoPec  
 
 warnings.filterwarnings("ignore", category=UserWarning)
-
-# Configurações de diretório
 PASTA_AUTOMACAO = PASTA_MONITORADA
 PASTA_PROCESSADOS = os.path.join(PASTA_AUTOMACAO, "Processados")
 
@@ -36,27 +29,20 @@ fila_arquivos = []
 fila_interface = queue.Queue()
 
 def planilha_esta_aberta(caminho_arquivo):
-    """Testa se o arquivo está bloqueado (aberto no Excel) tentando um acesso rápido."""
-    if not os.path.exists(caminho_arquivo):
-        return False
+    if not os.path.exists(caminho_arquivo): return False
     try:
-        with open(caminho_arquivo, 'a'):
-            pass
+        with open(caminho_arquivo, 'a'): pass
         return False
-    except PermissionError:
-        return True
+    except PermissionError: return True
 
 def inicializar_mapa_postos():
-    if not os.path.exists(PLANILHA_ANALISE):
-        return {}
+    if not os.path.exists(PLANILHA_ANALISE): return {}
     try:
         wb = load_workbook(PLANILHA_ANALISE, data_only=True)
         mapa = mapear_ine_para_abas(wb)
         wb.close()
         return mapa
-    except Exception as e:
-        print(f"⚠️ Aviso: Não foi possível carregar o mapa inicial. ({e})")
-        return {}
+    except Exception as e: return {}
 
 MAPA_NOMES_POSTOS = inicializar_mapa_postos()
 
@@ -64,27 +50,22 @@ class RedirecionadorSaida:
     def __init__(self, fila):
         self.fila = fila
         self.buffer = ""
-    
     def write(self, texto):
         self.buffer += texto
         if '\n' in self.buffer:
             linhas = self.buffer.split('\n')
             for linha in linhas[:-1]:
-                if linha.strip():
-                    self.fila.put(linha.strip())
+                if linha.strip(): self.fila.put(linha.strip())
             self.buffer = linhas[-1]
-            
     def flush(self): pass
 
 def limpar_codigos_cor(texto):
     import re
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@~])')
-    return ansi_escape.sub('', texto)
+    return re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@~])', '', texto)
 
 def eh_arquivo_valido(nome_arquivo):
     nome = nome_arquivo.lower()
-    if nome.startswith("~") or nome.startswith(".") or "analise.xlsx" in nome: return False
-    return nome.endswith(".xlsx") or nome.endswith(".pdf") or nome.endswith(".csv")
+    return not (nome.startswith("~") or nome.startswith(".") or "analise.xlsx" in nome) and nome.endswith((".xlsx", ".pdf", ".csv"))
 
 def processar_fila_em_lote():
     global fila_arquivos, MAPA_NOMES_POSTOS
@@ -101,8 +82,10 @@ def processar_fila_em_lote():
     print(f"⚙️ Processando {len(lote)} arquivo(s)...")
     
     try:
-        # CORREÇÃO: Adicionado data_only=True para extrair valores reais no lugar de fórmulas
-        wb = load_workbook(PLANILHA_ANALISE, data_only=True)
+        # CORREÇÃO: O Backup agora está DENTRO da blindagem (try)
+        realizar_backup_planilha(PLANILHA_ANALISE)
+        
+        wb = load_workbook(PLANILHA_ANALISE)
         mapa_abas = mapear_ine_para_abas(wb)
         
         for caminho in lote:
@@ -110,19 +93,15 @@ def processar_fila_em_lote():
             nome_arquivo_min = os.path.basename(caminho).lower()
             
             if nome_arquivo_min.endswith(".pdf"):
-                contexto = ContextoPec(caminho, wb, mapa_abas)
-                contexto.executar()
-            elif "sisab" in nome_arquivo_min: # MANTIDO SEM ALTERAÇÃO (Tópico 1)
-                contexto = ContextoSisab(caminho, wb, mapa_abas)
-                contexto.executar()
+                ContextoPec(caminho, wb, mapa_abas).executar()
+            elif "sisab" or "Sisab" in nome_arquivo_min: 
+                ContextoSisab(caminho, wb, mapa_abas).executar()
             
         print(f"💾 Salvando resultados na planilha...")
         wb.save(PLANILHA_ANALISE)
         wb.close()
         
-        # Atualiza o mapa global para a interface
         MAPA_NOMES_POSTOS = inicializar_mapa_postos()
-
         for caminho in lote:
             if os.path.exists(caminho):
                 shutil.move(caminho, os.path.join(PASTA_PROCESSADOS, os.path.basename(caminho)))
@@ -131,34 +110,30 @@ def processar_fila_em_lote():
 
     except Exception as e:
         print(f"❌ Erro crítico: {e}")
+        # Devolve os arquivos à fila se falhar a meio
         fila_arquivos.extend(lote)
 
 class MonitorRelatorios(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and eh_arquivo_valido(os.path.basename(event.src_path)):
             time.sleep(1) 
-            if event.src_path not in fila_arquivos:
-                fila_arquivos.append(event.src_path)
+            if event.src_path not in fila_arquivos: fila_arquivos.append(event.src_path)
 
 def iniciar_automacao_background():
-    # Varredura inicial (Lê o que já está na pasta)
     if os.path.exists(PASTA_AUTOMACAO):
         for arquivo in os.listdir(PASTA_AUTOMACAO):
             caminho_completo = os.path.join(PASTA_AUTOMACAO, arquivo)
-            if os.path.isfile(caminho_completo) and eh_arquivo_valido(arquivo):
-                if caminho_completo not in fila_arquivos:
-                    fila_arquivos.append(caminho_completo)
+            if os.path.isfile(caminho_completo) and eh_arquivo_valido(arquivo) and caminho_completo not in fila_arquivos:
+                fila_arquivos.append(caminho_completo)
 
-    event_handler = MonitorRelatorios()
     observer = Observer()
-    observer.schedule(event_handler, path=PASTA_AUTOMACAO, recursive=False)
+    observer.schedule(MonitorRelatorios(), path=PASTA_AUTOMACAO, recursive=False)
     observer.start()
     try:
         while True:
             processar_fila_em_lote()
             time.sleep(5)
-    except Exception:
-        observer.stop()
+    except Exception: observer.stop()
     observer.join()
 
 class AplicativoAutomacao:
@@ -173,6 +148,47 @@ class AplicativoAutomacao:
         tk.Label(frame_topo, text="👋 Olá, Rosileia!", bg="#FFFFFF", fg="#2C3E50", font=("Segoe UI", 16, "bold")).pack(anchor="w")
         tk.Label(frame_topo, text="O sistema monitora a pasta e salva na planilha automaticamente.", bg="#FFFFFF", fg="#7F8C8D", font=("Segoe UI", 11)).pack(anchor="w")
 
+        # Instruções
+        caixa_instrucoes = tk.Text(frame_topo, bg="#FFFFFF", font=("Segoe UI", 11), bd=0, highlightthickness=0, height=10, wrap="word")
+        caixa_instrucoes.pack(fill="x", pady=5)
+
+        caixa_instrucoes.tag_configure("padrao", foreground="#7F8C8D")
+        caixa_instrucoes.tag_configure("alerta", foreground="#E74C3C", font=("Segoe UI", 11, "bold"))
+        caixa_instrucoes.tag_configure("ok", foreground="#27AE60", font=("Segoe UI", 11, "bold"))    
+        caixa_instrucoes.tag_configure("atencao", foreground="#E67E22", font=("Segoe UI", 11, "bold")) 
+
+        caixa_instrucoes.insert("end", "1) Para arquivos que vem do PEC o PDF ", "padrao")
+        caixa_instrucoes.insert("end", "TEM QUE CONTER O NOME EM MAIÚSCULO", "alerta")
+        caixa_instrucoes.insert("end", " da unidade com os acentos.\n", "padrao")
+
+        caixa_instrucoes.insert("end", "2) Para arquivos que vem do SISAB ", "padrao")
+        caixa_instrucoes.insert("end", "precisa ser renomeado com Sisab ou sisab", "ok")
+        caixa_instrucoes.insert("end", " o nome do arquivo.\n", "padrao")
+
+        caixa_instrucoes.insert("end", "3) Lembre-se de quando baixar os arquivos ", "padrao")
+        caixa_instrucoes.insert("end", "DEIXE A PLANILHA FECHADA", "alerta")
+        caixa_instrucoes.insert("end", ", abra quando a sua assistente permitir!\n", "padrao")
+
+        caixa_instrucoes.insert("end", "4) Para arquivos do PEC, ", "padrao")
+        caixa_instrucoes.insert("end", "APENAS PDF", "atencao")
+        caixa_instrucoes.insert("end", " e do SISAB ", "padrao")
+        caixa_instrucoes.insert("end", "APENAS arquivo XLSX", "atencao")
+        caixa_instrucoes.insert("end", " do EXCEL.\n", "padrao")
+
+        caixa_instrucoes.insert("end", "5) A sua assistente segue o modelo para extrair os dados como consta no ", "padrao")
+        caixa_instrucoes.insert("end", "MANUAL", "atencao")
+        caixa_instrucoes.insert("end", ", fora disso ele não vai pegar os dados.\n", "padrao")
+
+        caixa_instrucoes.insert("end", "6) Se a planilha possuir algum problema feche a sua assistente, entre na pasta ", "padrao")
+        caixa_instrucoes.insert("end", "Cópias", "ok")
+        caixa_instrucoes.insert("end", " e pegue a PENULTIMA cópia da planilha na pasta e coloque no lugar da antiga renomeando para analise, MINISCULO e SEM ACENTO, apos isso abra a sua assistente novamente.\n", "padrao")
+
+        caixa_instrucoes.insert("end", "7) Recomendo usar a assistente APENAS final do ", "padrao")
+        caixa_instrucoes.insert("end", "mês ", "ok")
+        caixa_instrucoes.insert("end", "para evitar a entrada de dados repetidos! .\n", "padrao")
+        
+        caixa_instrucoes.configure(state="disabled")
+
         frame_status = tk.Frame(self.root, bg="#FFFFFF", pady=10, padx=20, relief="groove", bd=1)
         frame_status.pack(fill="x", padx=20, pady=(0, 15))
         self.var_ultima_acao = tk.StringVar(value="Monitorando a pasta...")
@@ -181,29 +197,34 @@ class AplicativoAutomacao:
         frame_tabela = tk.Frame(self.root, bg="#F4F6F9")
         frame_tabela.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        colunas = ("ine", "posto", "mes", "indicador", "valor", "status") 
+        colunas = ("ine", "posto", "mes", "indicador", "v_doc", "v_plan", "status") 
         self.tabela = ttk.Treeview(frame_tabela, columns=colunas, show="headings")
         
         self.tabela.heading("ine", text="INE")
         self.tabela.heading("posto", text="Posto (Aba)")
         self.tabela.heading("mes", text="Mês")
         self.tabela.heading("indicador", text="Indicador / Procedimento")
-        self.tabela.heading("valor", text="Valor")
+        self.tabela.heading("v_doc", text="Valor Doc.")
+        self.tabela.heading("v_plan", text="Valor Planilha")
         self.tabela.heading("status", text="Status na Planilha")
 
-        self.tabela.column("ine", width=80, anchor="center")
-        self.tabela.column("posto", width=180, anchor="w")
-        self.tabela.column("mes", width=90, anchor="center")
-        self.tabela.column("indicador", width=300, anchor="w")
-        self.tabela.column("valor", width=70, anchor="center")
-        self.tabela.column("status", width=180, anchor="center")
+        self.tabela.column("ine", width=80, anchor="center", stretch=False)
+        self.tabela.column("posto", width=180, anchor="w", stretch=False)
+        self.tabela.column("mes", width=90, anchor="center", stretch=False)
+        self.tabela.column("indicador", width=300, anchor="w", stretch=True)
+        self.tabela.column("v_doc", width=100, anchor="center", stretch=False)
+        self.tabela.column("v_plan", width=120, anchor="center", stretch=False)
+        self.tabela.column("status", width=180, anchor="center", stretch=False)
 
         self.tabela.tag_configure('sucesso', background='#E8F8F5', foreground='#117864') 
         self.tabela.tag_configure('erro', background='#FDEDEC', foreground='#C0392B')    
 
-        scrollbar = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela.yview)
-        self.tabela.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
+        scrollbar_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela.yview)
+        scrollbar_x = ttk.Scrollbar(frame_tabela, orient="horizontal", command=self.tabela.xview)
+        self.tabela.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        scrollbar_y.pack(side="right", fill="y")
+        scrollbar_x.pack(side="bottom", fill="x")
         self.tabela.pack(side="left", fill="both", expand=True)
 
         sys.stdout = RedirecionadorSaida(fila_interface)
@@ -221,34 +242,37 @@ class AplicativoAutomacao:
                         self.tabela.delete(item)
                         
                 elif texto_limpo.startswith("UI_RESULTADO|"):
-                    partes = texto_limpo.split("|")
-                    if len(partes) >= 7:
-                        status_cod = partes[1].strip()
-                        ine_visual = partes[2].strip()
-                        aba_nome = partes[3].strip()
-                        indicador = partes[4].strip()
-                        valor = partes[5].strip()
-                        mes_visual = partes[6].strip()
-
-                        status_map = {
-                            "SUCESSO": ("✅ Salvo com sucesso", "sucesso"),
-                            "FALHA_MES": ("❌ Mês não achado", "erro"),
-                            "FALHA_SISTEMA": ("❌ Coluna SISAB/PEC ñ achada", "erro"),
-                            "FALHA_LINHA": ("❌ Indicador não achado", "erro"),
-                            "FALHA_INE": ("❌ Aba ñ encontrada", "erro")
-                        }
-                        texto_status, tag_cor = status_map.get(status_cod, ("❌ Erro desconhecido", "erro"))
-
-                        posto_nome = MAPA_NOMES_POSTOS.get(ine_visual, aba_nome)
-                        if ine_visual in ["None", "PDF_SEM_NOME"]: ine_visual = "-"
-
-                        self.tabela.insert("", 0, values=(ine_visual, posto_nome, mes_visual, indicador, valor, texto_status), tags=(tag_cor,))
+                    try:
+                        partes = texto_limpo.split("|")
+                        if len(partes) >= 8:
+                            status_cod = partes[1].strip()
+                            ine_visual = partes[2].strip()
+                            aba_nome = partes[3].strip()
+                            indicador = partes[4].strip()
+                            v_doc = partes[5].strip()
+                            v_plan = partes[6].strip()
+                            mes_visual = partes[7].strip()
+                            
+                            status_map = {
+                                "SUCESSO": ("✅ Salvo com sucesso", "sucesso"),
+                                "FALHA_MES": ("❌ Mês não achado", "erro"),
+                                "FALHA_SISTEMA": ("❌ Coluna SISAB/PEC ñ achada", "erro"),
+                                "FALHA_LINHA": ("❌ Indicador não achado", "erro"),
+                                "FALHA_INE": ("❌ Aba ñ encontrada", "erro")
+                            }
+                            texto_status, tag_cor = status_map.get(status_cod, ("❌ Erro desconhecido", "erro"))
+                            posto_nome = MAPA_NOMES_POSTOS.get(ine_visual, aba_nome)
+                            
+                            if ine_visual in ["None", "PDF_SEM_NOME"]: ine_visual = "-"
+                            
+                            self.tabela.insert("", 0, values=(ine_visual, posto_nome, mes_visual, indicador, v_doc, v_plan, texto_status), tags=(tag_cor,))
+                    except Exception as e:
+                        pass
                 
                 elif not texto_limpo.startswith("DADO_EXTRAIDO|"):
                     self.var_ultima_acao.set(texto_limpo)
                         
-        except queue.Empty:
-            pass
+        except queue.Empty: pass
         self.root.after(200, self.atualizar_interface)
 
 if __name__ == "__main__":

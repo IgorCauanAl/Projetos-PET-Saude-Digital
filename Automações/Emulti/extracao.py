@@ -1,16 +1,18 @@
 import os
 import time
+import shutil
 import pdfplumber
 import pandas as pd
 from copy import copy
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 import unicodedata
-from config import PLANILHA_2026
+from config import PLANILHA_2026, PASTA_COPIAS
 
 def padronizar_nome(nome):
     if not nome: return ""
     nome_str = str(nome)
+    # Remove acentuações para evitar duplicidade de profissionais por erros de digitação
     nome_sem_acentos = ''.join(c for c in unicodedata.normalize('NFD', nome_str) if unicodedata.category(c) != 'Mn')
     nome_maiusculo = nome_sem_acentos.upper()
     return ' '.join(nome_maiusculo.split()).strip()
@@ -31,6 +33,7 @@ def esperar_download_concluir(caminho_arquivo, timeout=60):
         try:
             if not os.path.exists(caminho_arquivo): return False
             tamanho_atual = os.path.getsize(caminho_arquivo)
+            # Verifica se o arquivo parou de crescer e pode ser lido (File Lock bypass)
             if tamanho_atual > 0 and tamanho_atual == tamanho_anterior:
                 with open(caminho_arquivo, 'rb'): pass
                 return True
@@ -54,21 +57,38 @@ def limpar_arquivos_antigos(pasta, horas=24, app=None):
     except Exception as e:
         if app: app.inserir_log(f"Erro ao limpar: {e}", "VERMELHO")
 
-def obter_profissionais_planilha():
-    existentes = set()
-    if not os.path.exists(PLANILHA_2026): return existentes
+def obter_profissionais_planilha(tipo=None, mes_atual=None):
+    dados_planilha = {} 
+    if not os.path.exists(PLANILHA_2026): return dados_planilha
     try:
+        # read_only e data_only otimizam I/O e previnem execução acidental de código malicioso em macros
         wb = load_workbook(PLANILHA_2026, read_only=True, data_only=True)
         ws = wb.active
-        for row in ws.iter_rows(min_row=13, max_col=1):
-            cell_value = row[0].value
+        
+        coluna_alvo = None
+        if tipo and mes_atual:
+            col_mes_inicio = next((cell.column for cell in ws[11] if cell.value and padronizar_nome(str(cell.value)) == mes_atual), None)
+            if col_mes_inicio:
+                if tipo == "INDIVIDUAL" and padronizar_nome(str(ws.cell(row=12, column=col_mes_inicio).value)) == "INDIVIDUAL":
+                    coluna_alvo = col_mes_inicio
+                elif tipo == "COLETIVO" and padronizar_nome(str(ws.cell(row=12, column=col_mes_inicio + 1).value)) == "COLETIVO":
+                    coluna_alvo = col_mes_inicio + 1
+
+        for row_idx in range(13, ws.max_row + 1):
+            cell_value = ws.cell(row=row_idx, column=1).value
             if not cell_value: continue
             nome_padronizado = padronizar_nome(str(cell_value))
             if "TOTAL" in nome_padronizado: break 
-            if nome_padronizado: existentes.add(nome_padronizado)
+            
+            if nome_padronizado: 
+                valor_atual = 0
+                if coluna_alvo:
+                    val = ws.cell(row=row_idx, column=coluna_alvo).value
+                    valor_atual = val if isinstance(val, (int, float)) else 0
+                dados_planilha[nome_padronizado] = valor_atual
         wb.close()
     except Exception: pass
-    return existentes
+    return dados_planilha
 
 def ler_relatorio_pdf(caminho_pdf):
     texto_total = ""
@@ -76,6 +96,21 @@ def ler_relatorio_pdf(caminho_pdf):
         for pagina in pdf.pages:
             texto_total += pagina.extract_text() + "\n"
     
+    # --- VALIDAÇÃO ESTRUTURAL RIGOROSA (INPUT SANITIZATION) ---
+    texto_upper = texto_total.upper()
+    
+    marcadores_obrigatorios = [
+        "MINISTÉRIO DA SAÚDE",
+        "SANTO ANTÔNIO DE JESUS",
+        "NÍVEL DE DETALHE: PROFISSIONAL"
+    ]
+    
+    for marcador in marcadores_obrigatorios:
+        if marcador not in texto_upper:
+            # Lança exceção bloqueando o fluxo (Fail-Safe)
+            raise ValueError(f"Estrutura inválida ou arquivo incorreto. Marcador ausente: '{marcador}'")
+    # ----------------------------------------------------------
+
     linhas = texto_total.splitlines()
     periodo_linha = next((l for l in linhas if "Período:" in l), "")
     mes_atual = "MÊS NÃO IDENTIFICADO"
@@ -88,6 +123,9 @@ def ler_relatorio_pdf(caminho_pdf):
         except Exception: pass
 
     tipo = "COLETIVO" if "Relatório de atividade coletiva" in texto_total else ("INDIVIDUAL" if "Relatório de atendimento individual" in texto_total else "DESCONHECIDO")
+
+    if tipo == "DESCONHECIDO":
+        raise ValueError("Estrutura inválida. O PDF não é de Atividade Coletiva nem Individual.")
 
     profissionais, nomes_duplicados = {}, set()
     processando = False 
@@ -176,6 +214,15 @@ def atualizar_planilha(tipo, mes_atual, profissionais, app):
 
         wb.save(PLANILHA_2026)
         wb.close()
+
+        # --- LÓGICA DE BACKUP DE SEGURANÇA (Disaster Recovery) ---
+        try:
+            caminho_backup = os.path.join(PASTA_COPIAS, "Planilha Produção 2026.xlsx")
+            shutil.copy2(PLANILHA_2026, caminho_backup)
+            app.inserir_log("BACKUP LOCAL: Cópia de segurança atualizada com sucesso.", "AZUL")
+        except Exception as e:
+            app.inserir_log(f"Aviso - Falha ao criar backup: {e}", "AMARELO")
+
         app.inserir_log("SUCESSO! ATUALIZAÇÃO CONCLUÍDA.", "VERDE")
         app.inserir_log(f"Total processado: {atualizados} registros.", "BRANCO")
         if novos_inseridos:
@@ -183,7 +230,7 @@ def atualizar_planilha(tipo, mes_atual, profissionais, app):
             for item in novos_inseridos: app.inserir_log(f"   {item}", "VERDE")
         return True 
     except PermissionError:
-        app.inserir_log("ERRO: Planilha aberta. Feche e tente novamente.", "VERMELHO")
+        app.inserir_log("ERRO: Planilha aberta.Baixe o arquivo novamente e tente novamente!.", "VERMELHO")
         return False
     except Exception as e:
         app.inserir_log(f"Erro GERAL: {e}", "VERMELHO")

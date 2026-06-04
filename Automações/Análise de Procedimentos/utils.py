@@ -74,7 +74,7 @@ def realizar_backup_planilha(caminho_planilha):
         while len(arquivos_backup) > 10:
             arquivo_antigo = arquivos_backup.pop(0)
             os.remove(arquivo_antigo)
-            registrar_log(f"♻️ Expurgo de backup antigo: {os.path.basename(arquivo_antigo)}", Cores.AMARELO)
+            registrar_log(f"♻️ Reciclando backup antigo: {os.path.basename(arquivo_antigo)}", Cores.AMARELO)
             
         return True
     except Exception as e:

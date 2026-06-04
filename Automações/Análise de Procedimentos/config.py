@@ -1,40 +1,54 @@
 import os
+import sys
+import glob 
+from datetime import datetime
 
 # === CONFIGURAÇÕES VISUAIS DO TERMINAL ===
 class Cores:
-    RESET = ''
-    VERMELHO = ''
-    VERDE = ''
-    AMARELO = ''
-    AZUL = ''
-    ROXO = ''
-    CIANO = ''
-    BRANCO = ''
-    NEGRITO = ''
-    FUNDO_VERMELHO = ''
+    RESET = '\033[0m'
+    VERMELHO = '\033[31m'
+    VERDE = '\033[32m'
+    AMARELO = '\033[33m'
+    AZUL = '\033[34m'
+    ROXO = '\033[35m'
+    CIANO = '\033[36m'
+    BRANCO = '\033[37m'
+    NEGRITO = '\033[1m'
+    FUNDO_VERMELHO = '\033[41m'
 
-#configuracao universal do diretorio
-HOME_USER = os.path.expanduser("~")
+# =========================================================================
+# 1. RESOLUÇÃO DE CAMINHO DINÂMICO (Blindagem PyInstaller)
+# =========================================================================
+# O atributo 'frozen' (congelado) é injectado pelo PyInstaller quando o código é transformado em .exe
+if getattr(sys, 'frozen', False):
+    # Se for um executável, o caminho base é a pasta onde o .exe está localizado
+    DIRETORIO_BASE = os.path.dirname(sys.executable)
+else:
+    # Se for um script .py normal, usa o caminho do próprio ficheiro config.py
+    DIRETORIO_BASE = os.path.dirname(os.path.abspath(__file__))
 
-# Lista de possíveis nomes para a pasta
-possiveis_nomes = ["Desktop", "Área de Trabalho", "Area de Trabalho"]
-pasta_desktop = None
+# Definimos que a pasta monitorada é a pasta onde o programa foi executado.
+# Isso torna o software "Portátil" (Portable), podendo rodar de um Pen Drive ou qualquer pasta.
+PASTA_MONITORADA = DIRETORIO_BASE
 
-for nome in possiveis_nomes:
-    caminho_teste = os.path.join(HOME_USER, nome)
-    if os.path.exists(caminho_teste):
-        pasta_desktop = caminho_teste
-        break
+# =========================================================================
+# 2. LOCALIZAÇÃO DINÂMICA DA PLANILHA
+# =========================================================================
+# Busca por qualquer ficheiro que comece com "Análise de Produção" e termine com .xlsx no diretório atual
+padrao_busca = os.path.join(PASTA_MONITORADA, "Análise de Produção*.xlsx")
+arquivos_encontrados = glob.glob(padrao_busca)
 
-# Caso o Windows use um padrão muito diferente
-if not pasta_desktop:
-    pasta_desktop = os.path.join(HOME_USER, "Desktop")
+if arquivos_encontrados:
+    # Se encontrar, utiliza a primeira correspondência encontrada
+    PLANILHA_ANALISE = arquivos_encontrados[0]
+else:
+    # Se não encontrar, define um nome padrão com o ano atual para criação posterior
+    ano_atual = datetime.now().year
+    PLANILHA_ANALISE = os.path.join(PASTA_MONITORADA, f"Análise de Produção {ano_atual}.xlsx")
 
-PASTA_MONITORADA = os.path.join(pasta_desktop, "analise")
-PLANILHA_ANALISE = os.path.join(PASTA_MONITORADA, "analise.xlsx")
-
-
-# Regras gerais
+# =========================================================================
+# 3. MAPEAMENTO DE REGRAS DE EXTRAÇÃO (PEC / PDF)
+# =========================================================================
 MAPA_REGRAS_PDF = {
     "ATENDIMENTO GERAL\n (Médico)": ("geral", "Registros identificados", "simples"),
     "ATENDIMENTO GERAL\n (Enfermeiro)": ("geral", "Registros identificados", "simples"),
@@ -72,6 +86,9 @@ MAPA_REGRAS_PDF = {
     "ANÁLISE DA SITUAÇÃO CADASTRAL": ("geral", "dummy_term", "simples"),
 }
 
+# =========================================================================
+# 4. MAPEAMENTO DE CONDIÇÕES E PROCEDIMENTOS (SISAB / EXCEL)
+# =========================================================================
 MAPA_CONDICOES_SISAB = {
     "Pré-natal": {"Médico": "PRÉ-NATAL (Médico)", "Enfermeiro": "PRÉ-NATAL (Enfermeiro)"},
     "Diabetes": {"Médico": "DIABETES (Médico)", "Enfermeiro": "DIABETES (Enfermeiro)"},

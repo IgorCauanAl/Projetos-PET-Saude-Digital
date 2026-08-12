@@ -1,17 +1,20 @@
 import os
 import re
 import pandas as pd
+
 from base import EstrategiaExtracao, extrair_texto_pdf, extrair_valor_da_secao_pdf
-from config import Cores, MAPA_REGRAS_PDF
+from config import Cores
 from utils import registrar_log
 from excel_manager import atualizar_planilha_sisab_memoria
 
 class PecAtividadeColetivaStrategy(EstrategiaExtracao):
-    def __init__(self, texto): self.texto = texto
+    def __init__(self, texto):
+        self.texto = texto
+
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de Atividade Coletiva.")
         dados = {}
-        
+
         termos_pse = {
             "Ações de combate ao Aedes aegypti": r"Ações de combate ao Aedes aegypti[\s,]+(\d+)",
             "Alimentação saudável": r"Alimentação saudável[\s,]+(\d+)",
@@ -20,17 +23,15 @@ class PecAtividadeColetivaStrategy(EstrategiaExtracao):
             "Não informado": r"Não informado[\s,]+(\d+)",
             "PREVENÇÃO AO COVID-19 NAS ESCOLAS": r"(?:0101010095|PREVEN(?:C|Ç)(?:A|Ã)O AO COVID-19 NAS ESCOLAS)[\s,]+(\d+)"
         }
-        
+
         soma_pse = 0
-        termos_encontrados = []
         for nome_termo, padrao in termos_pse.items():
             matches = re.findall(padrao, self.texto, re.IGNORECASE)
             valor_termo = sum(int(m) for m in matches)
             if valor_termo > 0:
                 soma_pse += valor_termo
-                termos_encontrados.append(f"{nome_termo} ({valor_termo})")
                 print(f"UI_DETALHE|PSE - Procedimentos Coletivos|{nome_termo}|{valor_termo}", flush=True)
-                
+
         if soma_pse > 0:
             dados["PSE"] = soma_pse
 
@@ -38,6 +39,7 @@ class PecAtividadeColetivaStrategy(EstrategiaExtracao):
         if val_geral == 0:
             match = re.search(r"Total:\s*(\d+)", self.texto, re.IGNORECASE)
             if match: val_geral = int(match.group(1))
+
         if val_geral > 0:
             dados["ATIVIDADE COLETIVA"] = val_geral
             print(f"UI_DETALHE|ATIVIDADE COLETIVA|Total de Registros|{val_geral}", flush=True)
@@ -45,25 +47,28 @@ class PecAtividadeColetivaStrategy(EstrategiaExtracao):
         return dados
 
 class PecVisitaDomiciliarStrategy(EstrategiaExtracao):
-    def __init__(self, texto): self.texto = texto
-    
+    def __init__(self, texto):
+        self.texto = texto
+
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de visita domiciliar e territorial.")
         padrao = r"Resumo de produ[cç][aã]o[\s\S]{0,150}?Registros identificados[\W_]+(\d+)[\s\S]{0,150}?Registros n[aã]o identificados[\W_]+(\d+)"
         match = re.search(padrao, self.texto, re.IGNORECASE)
-        
+
         if match:
-            val_id = int(match.group(1))   
-            val_nid = int(match.group(2))  
-            total = val_id + val_nid       
+            val_id = int(match.group(1))
+            val_nid = int(match.group(2))
+            total = val_id + val_nid
             print(f"UI_DETALHE|VISITA DE ACS|Registros Identificados|{val_id}", flush=True)
             print(f"UI_DETALHE|VISITA DE ACS|Registros Não Identificados|{val_nid}", flush=True)
             return {"VISITA DE ACS": total}
-        
+
         return {}
 
 class PecCadastroIndividualStrategy(EstrategiaExtracao):
-    def __init__(self, texto): self.texto = texto
+    def __init__(self, texto):
+        self.texto = texto
+
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de cadastro individual.")
         valor = extrair_valor_da_secao_pdf(self.texto, "Cidadãos ativos")
@@ -72,55 +77,76 @@ class PecCadastroIndividualStrategy(EstrategiaExtracao):
         return {"ANÁLISE DA SITUAÇÃO CADASTRAL": valor} if valor > 0 else {}
 
 class PecMarcadorConsumoStrategy(EstrategiaExtracao):
-    def __init__(self, texto): self.texto = texto
+    def __init__(self, texto):
+        self.texto = texto
+
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de marcadores de consumo alimentar.")
         val_id = extrair_valor_da_secao_pdf(self.texto, "Registros identificados")
         val_nid = extrair_valor_da_secao_pdf(self.texto, "Registros não identificados")
         total = val_id + val_nid
-        
+
         if total > 0:
             print(f"UI_DETALHE|MARCADOR DE CONSUMO|Registros Identificados|{val_id}", flush=True)
             print(f"UI_DETALHE|MARCADOR DE CONSUMO|Registros Não Identificados|{val_nid}", flush=True)
-            return {"MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS E NO IDS)": total}
+            return {"MARCADOR DE CONSUMO ALIMENTAR (OLHAR NO E-SUS)": total}
         return {}
 
 class PecAtendimentoProcedimentoStrategy(EstrategiaExtracao):
-    def __init__(self, texto, categoria): 
+    def __init__(self, texto, categoria):
         self.texto = texto
         self.categoria = categoria.upper()
 
     def _extrair_valor(self, padroes, tipo="simples", procedimento_nome=""):
-        # Limpa aspas e vírgulas, transformando o texto num bloco unificado
+        # Correção aqui: Adicionada a barra invertida \ antes do '
         texto_limpo = re.sub(r'["\',]', ' ', self.texto)
         texto_limpo = re.sub(r'\s+', ' ', texto_limpo)
         total = 0
-        
-        if isinstance(padroes, str): 
+
+        if isinstance(padroes, str):
             padroes = [padroes]
-            
+
+        # ANTI-FALSO-POSITIVO 1: intervalos já contabilizados por ESTA chamada
+        # (evita que dois padrões da MESMA categoria capturem o mesmo número
+        # duas vezes quando eles se sobrepõem no texto, ex.: código SIGTAP
+        # e o nome do procedimento aparecendo na mesma linha).
+        spans_contabilizados = []
+
+        def _sobrepoe(inicio, fim):
+            return any(not (fim <= s0 or inicio >= s1) for s0, s1 in spans_contabilizados)
+
         for padrao in padroes:
-            regex_completa = padrao + r"\s*(\d{1,5})(?:\s+(\d{1,5}))?"            
-            matches = re.findall(regex_completa, texto_limpo, re.IGNORECASE)
-            
+            # ANTI-FALSO-POSITIVO 2: a janela entre a âncora (código/termo) e o
+            # número deixou de ser ilimitada ([^\d]*) e passou a ser limitada
+            # e não-gulosa ([^\d]{0,80}?). Isso evita que o regex "pule" para
+            # um número de uma tabela/seção totalmente diferente quando a
+            # extração de texto do PDF embaralha colunas.
+            # Também é bloqueada a travessia de um rótulo "Total:", que é a
+            # origem mais comum de valores capturados incorretamente.
+            regex_completa = padrao + r"(?:(?!Total\s*:)[^\d]){0,80}?(\d{1,5})\b(?:\s+(\d{1,5})\b)?"
+            matches = list(re.finditer(regex_completa, texto_limpo, re.IGNORECASE))
+
             for m in matches:
-                val1 = int(m[0]) if m[0] else 0 
-                val2 = int(m[1]) if m[1] else 0 
-                
+                if _sobrepoe(m.start(), m.end()):
+                    continue  # já contabilizado por outro padrão desta mesma categoria
+
+                val1 = int(m.group(1)) if m.group(1) else 0
+                val2 = int(m.group(2)) if m.group(2) else 0
+
                 valor_final = 0
                 if tipo == "simples": valor_final = val1
                 elif tipo == "avaliado": valor_final = val2 if val2 > 0 else val1
                 elif tipo == "soma_exames": valor_final = (val1 + val2)
-                
+
                 if valor_final > 0:
                     total += valor_final
-                    
+                    spans_contabilizados.append((m.start(), m.end()))
+
                     if "Registros" in padrao and "identificados" in padrao:
                         item_limpo = "Registros Identificados"
                     else:
-                        # RegEx atualizado para capturar 48 e 49 também
                         match_codigo = re.search(r'([A-Z]\d{2}|48|49|\d{10})', padrao)
-                        
+
                         if match_codigo:
                             codigo_encontrado = match_codigo.group(1)
                             descricoes_ciap2 = {
@@ -140,134 +166,124 @@ class PecAtendimentoProcedimentoStrategy(EstrategiaExtracao):
                             elif "HIV" in padrao: item_limpo = "Sorologia HIV"
                             elif "Hemoglobina" in padrao: item_limpo = "Hemoglobina Glicada"
                             else: item_limpo = "Atendimento Identificado"
-                    
+
                     print(f"UI_DETALHE|{procedimento_nome}|{item_limpo}|{valor_final}", flush=True)
         return total
 
     def extrair(self):
         registrar_log("ℹ️ Detectado: Relatório de Atendimento/Procedimentos e Exames.")
         dados_extraidos = {}
-        
+
         regras_mapeamento = {
-            "ATENDIMENTO GERAL": {"termos": [r"Resumo\s*de\s*produ[çc][ãa]o[\s\S]{0,200}?Registros\s*identificados[^\d]*"], "tipo": "simples"},
-            "RASTREAMENTO CANCER DE CMA": {"termos": [r"C[âa]ncer de mama[^\d]*"], "tipo": "simples"},
-            "RASTREAMENTO CANCER DE CCU": {"termos": [r"C[âa]ncer do colo do [úu]tero[^\d]*"], "tipo": "simples"},
-            "DIABETES": {
-                "termos": [r"Diabetes[^\d]*", r"\bT89[^\d]*", r"\bT90[^\d]*"], 
-                "tipo": "simples"
-            },
-            "HIPERTENSÃO": {
-                "termos": [r"Hipertens[ãa]o arterial[^\d]*", r"\bK86[^\d]*", r"\bK87[^\d]*"], 
-                "tipo": "simples"
-            },
-            "ATEND. DOMICILIAR": {"termos": [r"Domic[íi]lio[^\d]*"], "tipo": "simples"},
-            "AVALIAÇÃO DO PÉ DIABÉTICO": {
-                "termos": [
-                    # Fica em Procedimentos/Pequenas Cirurgias no PEC.
-                    r"Exame\s+do\s+p[eé]\s+diab[eé]tico[^\d]*"
-                ],
-                "tipo": "simples"
-            },
-            "PREVENTIVO GINECOLÓGICO": {
-                "termos": [
-                    # Nome usado pelo PEC para o preventivo.
-                    r"Coleta\s+de\s+citopatol[oó]gico\s+de\s+colo\s+uterino[^\d]*",
-                    r"Coleta\s+de\s+material\s+do\s+colo\s+de\s+[úu]tero\s+para\s+exame\s+citopatol[oó]gico[^\d]*"
-                ],
-                "tipo": "simples"
-            },
-            "AFERIÇÃO DE PRESSÃO ARTERIAL": {"termos": [r"(?:AFERI(?:C|Ç)(?:A|Ã)O\s+DE\s+PRESS(?:A|Ã)O\s+ARTERIAL|0301100039)[^\d]*"], "tipo": "simples"},
+            "ATENDIMENTO GERAL": {"termos": [r"Resumo\s*de\s*produ[çc][ãa]o[\s\S]{0,200}?Registros\s*identificados[^\d]{0,80}?"], "tipo": "simples"},
+            # ANTI-FALSO-POSITIVO: mantido apenas o código SIGTAP (0204030188).
+            # O padrão textual "MAMOGRAFIA[^\d]*" foi removido porque batia na
+            # MESMA ocorrência do código na mesma linha, duplicando a contagem
+            # (ex.: relatório real tinha 2, o sistema contava 4).
+            "RASTREAMENTO CANCER DE CMA": {"termos": [r"\b0204030188\b[^\d]{0,80}?"], "tipo": "simples"},
+            "RASTREAMENTO CANCER DE CCU": {"termos": [r"C[âa]ncer do colo do [úu]tero[^\d]{0,80}?"], "tipo": "simples"},
+            "DIABETES": {"termos": [r"\bT89\b[^\d]{0,80}?", r"\bT90\b[^\d]{0,80}?"], "tipo": "simples"},
+            "HIPERTENSÃO": {"termos": [r"\bK86\b[^\d]{0,80}?", r"\bK87\b[^\d]{0,80}?"], "tipo": "simples"},
+            "ATEND. DOMICILIAR": {"termos": [r"Domic[íi]lio[^\d]{0,80}?"], "tipo": "simples"},
+            "AVALIAÇÃO DO PÉ DIABÉTICO": {"termos": [r"Exame\s+do\s+p[eé]\s+diab[eé]tico[^\d]{0,80}?"], "tipo": "simples"},
+            "AVALIAÇÃO DA PESSOA IDOSA": {"termos": [r"\b0301010293\b[^\d]{0,80}?", r"AVALIA[CÇ][AÃ]O\s+MULTIDIMENSIONAL\s+DA\s+PESSOA\s+IDOSA[^\d]{0,80}?"], "tipo": "simples"},
+            "PREVENTIVO GINECOLÓGICO": {"termos": [r"Coleta\s+de\s+citopatol[oó]gico\s+de\s+colo\s+uterino[^\d]{0,80}?", r"Coleta\s+de\s+material\s+do\s+colo\s+de\s+[úu]tero\s+para\s+exame\s+citopatol[oó]gico[^\d]{0,80}?"], "tipo": "simples"},
+            "AFERIÇÃO DE PRESSÃO ARTERIAL": {"termos": [r"(?:AFERI(?:C|Ç)(?:A|Ã)O\s+DE\s+PRESS(?:A|Ã)O\s+ARTERIAL|0301100039)[^\d]{0,80}?"], "tipo": "simples"},
             "TESTE RÁPIDO SIFILIS": {
                 "termos": [
-                    # Fica em Procedimentos - Teste rápido como "Para sífilis".
-                    # Não incluir código laboratorial de sorologia aqui.
-                    r"Procedimentos\s*[-–/]?\s*Teste\s+r[aá]pido[\s\S]{0,600}?Para\s+s[ií]filis[^\d]*"
-                ],
-                "tipo": "simples"
+                    # ANTI-FALSO-POSITIVO: âncora pelo código SIGTAP tem prioridade;
+                    # "avaliado" (abaixo) evita perder casos onde "Solicitado" = 0
+                    r"\b0214010252\b[^\d]{0,80}?",
+                    r"\b0214010074\b[^\d]{0,80}?",
+                    r"Trepon[êe]mico\s*\(s[ií]filis\)[^\d]{0,80}?",
+                ], "tipo": "avaliado"
             },
+
             "TESTE RÁPIDO HIV": {
                 "termos": [
-                    # Fica em Procedimentos - Teste rápido como "Para HIV".
-                    r"Procedimentos\s*[-–/]?\s*Teste\s+r[aá]pido[\s\S]{0,600}?Para\s+HIV[^\d]*"
-                ],
-                "tipo": "simples"
+                    r"\b0214010279\b[^\d]{0,80}?",
+                    r"\b0214010058\b[^\d]{0,80}?",
+                    r"Teste\s+r[aá]pido[\s\S]{0,60}?Para\s+HIV[^\d]{0,80}?",
+                    r"anticorpos\s+anti-?HIV\s+para\s+popula[çc][ãa]o\s+geral[^\d]{0,80}?",
+                ], "tipo": "avaliado"
             },
-            "TESTE DO PEZINHO": {"termos": [r"(?:TESTE\s+DO\s+PEZINHO|COLETA\s+DE\s+SANGUE\s+PARA\s+TRIAGEM\s+NEONATAL|0201020050)[^\d]*"], "tipo": "simples"},
-            "CURATIVOS": {"termos": [r"(?:CURATIVO SIMPLES|0301100284)[^\d]*", r"(?:Curativo especial|0301100276)[^\d]*"], "tipo": "simples"},
-            "PUERICULTURA": {"termos": [r"(?:(?:ABP\s*[O0]*4|0301010110)[-–\s]*)?PUERICULTURA[^\d]*"], "tipo": "simples"},
-            
-            "SAUDE SEXUAL E REPRODUTIVA": {
+            "TESTE DO PEZINHO": {"termos": [r"(?:TESTE\s+DO\s+PEZINHO|COLETA\s+DE\s+SANGUE\s+PARA\s+TRIAGEM\s+NEONATAL|0201020050)[^\d]{0,80}?"], "tipo": "simples"},
+            "CURATIVOS": {"termos": [r"(?:CURATIVO SIMPLES|0301100284)[^\d]{0,80}?", r"(?:Curativo especial|0301100276)[^\d]{0,80}?"], "tipo": "simples"},
+            "PUERICULTURA": {
                 "termos": [
-                    r"\bB25[^\d]*", r"\bW02[^\d]*", r"\bW10[^\d]*", r"\bW11[^\d]*", r"\bW12[^\d]*", 
-                    r"\bW13[^\d]*", r"\bW14[^\d]*", r"\bW15[^\d]*", r"\bW79[^\d]*", r"\bW82[^\d]*", 
-                    r"\bX01[^\d]*", r"\bX02[^\d]*", r"\bX03[^\d]*", r"\bX04[^\d]*", r"\bX05[^\d]*", 
-                    r"\bX06[^\d]*", r"\bX07[^\d]*", r"\bX08[^\d]*", r"\bX09[^\d]*", r"\bX10[^\d]*", 
-                    r"\bX11[^\d]*", r"\bX12[^\d]*", r"\bX13[^\d]*", r"\bX23[^\d]*", r"\bX24[^\d]*", 
-                    r"\bX82[^\d]*", r"\bX89[^\d]*", r"\bY14[^\d]*"
+                    # ANTI-FALSO-POSITIVO: ancorado pelo CÓDIGO SIGTAP (que sempre
+                    # vem imediatamente antes do número na tabela original), e não
+                    # mais pela palavra "PUERICULTURA" (que, quando o PDF tem duas
+                    # colunas, pode ficar longe do número certo e "roubar" o total
+                    # de uma seção vizinha, ex.: Total de Teste Rápido).
+                    r"\b0301010269\b[^\d]{0,80}?",
+                    r"\b0301010277\b[^\d]{0,80}?",
+                    r"\bABP0*4\b[^\d]{0,80}?",
                 ], "tipo": "simples"
             },
-            
-            "PRÉ-NATAL": {
-                "termos": [
-                    r"\bW78[^\d]*", r"\bW79[^\d]*", r"\bW81[^\d]*", r"\bW84[^\d]*", r"\bW85[^\d]*"
-                ], "tipo": "simples"
-            },
-            
-            "PUERPERAL (até 42 dias)": {
-                "termos": [
-                    # CIAP-2 numéricos: mantidos com descrição para evitar falso positivo em idade/faixa etária.
-                    r"(?<!\d)48(?!\d)\s*[-–]?\s*Esclarecimento\s*/?\s*discuss[aã]o\s*/?\s*aconselhamento\s*preventivo[^\d]*",
-                    r"(?<!\d)49(?!\d)\s*[-–]?\s*Outros\s*procedimentos\s*preventivos[^\d]*",
-                    r"\bP29[^\d]*", r"\bW18[^\d]*", r"\bW19[^\d]*",
-                    r"\bW70[^\d]*", r"\bW90[^\d]*", r"\bW91[^\d]*", r"\bW92[^\d]*", r"\bW93[^\d]*",
-                    r"\bW94[^\d]*", r"\bW95[^\d]*", r"\bW96[^\d]*"
-                ], "tipo": "simples"
-            },
-            
-            "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)": {
-                "termos": [
-                    # Soma Sorologia de sífilis (VDRL) solicitado + avaliado
-                    # com os códigos laboratoriais 0202031179 e 0202031390.
-                    r"Sorologia\s*de\s*s[ií]filis(?:\s*\(VDRL\))?[^\d]*",
-                    r"0202031179[^\d]*",
-                    r"0202031390[^\d]*"
-                ],
-                "tipo": "soma_exames"
-            },
-            "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)": {
-                "termos": [
-                    # Soma Sorologia para HIV solicitado + avaliado
-                    # com os códigos laboratoriais 0202031500 e 0202031519.
-                    r"Sorologia\s*para\s*HIV[^\d]*",
-                    r"0202031500[^\d]*",
-                    r"0202031519[^\d]*"
-                ],
-                "tipo": "soma_exames"
-            },
-            "SOLICITAÇÃO HEMOGLOBINA GLICADA - OLHAR SÓ NO E-SUS": {"termos": [r"Hemoglobina\s*glicada[^\d]*", r"0202010503[^\d]*"], "tipo": "soma_exames"}
+            # ATENÇÃO: W79 é compartilhado entre PRÉ-NATAL e SAUDE SEXUAL E REPRODUTIVA
+            # por definição das duas listas oficiais de CIAP-2 (ver imagens de
+            # referência). Isso é intencional (mesma ocorrência pode valer para
+            # as duas categorias), mas fica registrado aqui para não ser
+            # confundido com duplicação/erro no futuro.
+            "SAUDE SEXUAL E REPRODUTIVA": {"termos": [r"\bB25\b[^\d]{0,80}?", r"\bW02\b[^\d]{0,80}?", r"\bW1[0-5]\b[^\d]{0,80}?", r"\bW79\b[^\d]{0,80}?", r"\bW82\b[^\d]{0,80}?", r"\bX0[1-9]\b[^\d]{0,80}?", r"\bX1[0-3]\b[^\d]{0,80}?", r"\bX2[34]\b[^\d]{0,80}?", r"\bX82\b[^\d]{0,80}?", r"\bX89\b[^\d]{0,80}?", r"\bY14\b[^\d]{0,80}?", r"\bABP003\b[^\d]{0,80}?", r"\bABP022\b[^\d]{0,80}?", r"\bABP023\b[^\d]{0,80}?"], "tipo": "simples"},
+            "PRÉ-NATAL": {"termos": [r"\bW78\b[^\d]{0,80}?", r"\bW79\b[^\d]{0,80}?", r"\bW81\b[^\d]{0,80}?", r"\bW84\b[^\d]{0,80}?", r"\bW85\b[^\d]{0,80}?", r"\b0301010110\b[^\d]{0,80}?"], "tipo": "simples"},
+            "PUERPERAL (até 42 dias)": {"termos": [r"(?<!\d)48(?!\d)\s*[-–]?\s*Esclarecimento[^\d]{0,80}?", r"(?<!\d)49(?!\d)\s*[-–]?\s*Outros[^\d]{0,80}?", r"\bP29\b[^\d]{0,80}?", r"\bW18\b[^\d]{0,80}?", r"\bW19\b[^\d]{0,80}?", r"\bW70\b[^\d]{0,80}?", r"\bW9[0-6]\b[^\d]{0,80}?", r"\b0301010129\b[^\d]{0,80}?"], "tipo": "simples"},
+            "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)": {"termos": [r"Sorologia\s*de\s*s[ií]filis(?:\s*\(VDRL\))?[^\d]{0,80}?", r"\b0202031179\b[^\d]{0,80}?", r"\b0202031390\b[^\d]{0,80}?"], "tipo": "soma_exames"},
+            "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)": {"termos": [r"Sorologia\s*para\s*HIV[^\d]{0,80}?", r"\b0202031500\b[^\d]{0,80}?", r"\b0202031519\b[^\d]{0,80}?"], "tipo": "soma_exames"},
+            "SOLICITAÇÃO HEMOGLOBINA GLICADA - OLHAR SÓ NO E-SUS": {"termos": [r"Hemoglobina\s*glicada[^\d]{0,80}?", r"\b0202010503\b[^\d]{0,80}?"], "tipo": "soma_exames"}
         }
+
+        # ANTI-FALSO-POSITIVO 3: rede de segurança. Se o total de registros do
+        # relatório for identificável, qualquer categoria que exceda esse total
+        # é logicamente impossível e é sinal de que a extração "vazou" para
+        # outra seção do PDF. Não bloqueia o lançamento (para não travar a
+        # rotina por um caso legítimo não previsto), mas grava um alerta bem
+        # visível no log para revisão manual.
+        total_registros_match = re.search(
+            r"Registros\s*identificados[^\d]{0,20}?(\d{1,5})\b", self.texto, re.IGNORECASE
+        )
+        total_registros = int(total_registros_match.group(1)) if total_registros_match else None
 
         for chave_base, regra in regras_mapeamento.items():
             valor_extraido = self._extrair_valor(regra["termos"], tipo=regra["tipo"], procedimento_nome=chave_base)
-            
+
+            if total_registros and valor_extraido > total_registros:
+                registrar_log(
+                    f"⚠️ SUSPEITO: '{chave_base}' extraiu {valor_extraido}, "
+                    f"maior que o total de Registros Identificados ({total_registros}). "
+                    f"Possível falso positivo — revisar manualmente.",
+                    Cores.AMARELO,
+                )
+
             if valor_extraido > 0:
-                chave_final = chave_base 
                 cat_cap = self.categoria.capitalize()
-                
-                if chave_base == "ATENDIMENTO GERAL": chave_final = f"ATENDIMENTO GERAL ({cat_cap})"
-                elif chave_base == "PUERICULTURA": chave_final = f"PUERICULTURA ({cat_cap})"
-                elif chave_base in ["DIABETES", "HIPERTENSÃO", "PRÉ-NATAL", "ATEND. DOMICILIAR"]: chave_final = f"{chave_base} ({cat_cap})"
-                elif chave_base == "PUERPERAL (até 42 dias)": chave_final = "PUERPERAL"
-                elif chave_base == "AVALIAÇÃO DO PÉ DIABÉTICO": chave_final = "AVALIAÇÃO DO PÉ DIABÉTICO"
-                elif chave_base == "PREVENTIVO GINECOLÓGICO": chave_final = "PREVENTIVO GINECOLÓGICO"
-                elif chave_base == "AFERIÇÃO DE PRESSÃO ARTERIAL": chave_final = "AFERIÇÃO DE PRESSÃO ARTERIAL"
-                elif chave_base == "CURATIVOS": chave_final = "CURATIVOS (SOMAR SIMPLES E ESPECIAL)"
-                elif chave_base == "TESTE RÁPIDO SIFILIS": chave_final = "TESTE RÁPIDO SIFILIS (SOMAR NORMAL E O PARA GESTANTE)"
-                elif chave_base == "TESTE RÁPIDO HIV": chave_final = "TESTE RÁPIDO HIV (SOMAR NORMAL E O PARA GESTANTE)"
-                elif chave_base == "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)": chave_final = "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)"
-                elif chave_base == "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)": chave_final = "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)"
-                elif chave_base == "SOLICITAÇÃO HEMOGLOBINA GLICADA - OLHAR SÓ NO E-SUS": chave_final = f"SOLICITAÇÃO HEMOGLOBINA GLICADA (DIABÉTICOS - OLHAR SÓ NO E-SUS) - {self.categoria}"
-                
+
+                ancoras_map = {
+                    "ATENDIMENTO GERAL": f"ATENDIMENTO GERAL ({cat_cap})",
+                    "PUERICULTURA": f"PUERICULTURA ({cat_cap})",
+                    "DIABETES": f"DIABETES ({cat_cap})",
+                    "HIPERTENSÃO": f"HIPERTENSÃO ({cat_cap})",
+                    "PRÉ-NATAL": f"PRÉ-NATAL ({cat_cap})",
+                    "ATEND. DOMICILIAR": f"ATEND. DOMICILIAR ({cat_cap})",
+                    "PUERPERAL (até 42 dias)": "PUERPERAL (até 42 dias)",
+                    "AVALIAÇÃO DO PÉ DIABÉTICO": f"AVALIAÇÃO DO PÉ DIABÉTICO - {cat_cap}",
+                    "AVALIAÇÃO DA PESSOA IDOSA": f"AVALIAÇÃO DA PESSOA IDOSA ({cat_cap})",
+                    "PREVENTIVO GINECOLÓGICO": "PREVENTIVO GINECOLÓGICO",
+                    "AFERIÇÃO DE PRESSÃO ARTERIAL": "AFERIÇÃO DE PRESSÃO ARTERIAL",
+                    "CURATIVOS": "CURATIVOS (SOMAR SIMPLES E ESPECIAL)",
+                    "TESTE RÁPIDO SIFILIS": "Teste Rapido Para Sifilis",
+                    "TESTE RÁPIDO HIV": "Teste Rapido Para HIV",
+                    "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)": "SOROLOGIA SIFILIS (PN - OLHAR SÓ NO E-SUS)",
+                    "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)": "SOROLOGIA HIV (PN - OLHAR SÓ NO E-SUS)",
+                    "SOLICITAÇÃO HEMOGLOBINA GLICADA - OLHAR SÓ NO E-SUS": f"SOLICITAÇÃO HEMOGLOBINA GLICADA (DIABÉTICOS - OLHAR SÓ NO E-SUS) - {cat_cap}",
+                    "TESTE DO PEZINHO": "TESTE DO PEZINHO",
+                    "SAUDE SEXUAL E REPRODUTIVA": "SAUDE SEXUAL E REPRODUTIVA",
+                    "RASTREAMENTO CANCER DE CMA": "MAMOGRAFIA",
+                    "RASTREAMENTO CANCER DE CCU": "PREVENTIVO GINECOLÓGICO"
+                }
+
+                chave_final = ancoras_map.get(chave_base, f"{chave_base} ({cat_cap})")
                 dados_extraidos[chave_final] = valor_extraido
 
         return dados_extraidos
@@ -303,16 +319,13 @@ class ContextoPec:
             )
         else:
             nome_aba_real = identificador
-            
+
         nome_arquivo_virtual = f"{nome_aba_real}.pdf"
 
         estrategia = self._selecionar_estrategia(texto_bruto, categoria)
         dados_brutos = estrategia.extrair()
         dados_para_lancar = {}
 
-        # Categorias aceitas para comparação com as linhas geradas.
-        # Ex.: quando o PDF vem como "CIRURGIÃO DENTISTA", as linhas da planilha/código
-        # podem aparecer como "Odonto". Por isso usamos aliases.
         categoria_pdf = categoria.lower()
         aliases_categoria = [categoria_pdf]
         if "cirurg" in categoria_pdf and "dent" in categoria_pdf:
@@ -367,25 +380,18 @@ class ContextoPec:
                 )
 
     def _selecionar_estrategia(self, texto, categoria=""):
-        if re.search(r"Relatório de atividade coletiva", texto, re.IGNORECASE): 
+        if re.search(r"Relatório de atividade coletiva", texto, re.IGNORECASE):
             return PecAtividadeColetivaStrategy(texto)
-        elif re.search(r"Relatório de visita domiciliar e territorial", texto, re.IGNORECASE): 
+        elif re.search(r"Relatório de visita domiciliar e territorial", texto, re.IGNORECASE):
             return PecVisitaDomiciliarStrategy(texto)
-        elif re.search(r"Relatório de cadastro individual", texto, re.IGNORECASE): 
+        elif re.search(r"Relatório de cadastro individual", texto, re.IGNORECASE):
             return PecCadastroIndividualStrategy(texto)
-        elif re.search(r"Relatório de marcadores de consumo alimentar", texto, re.IGNORECASE): 
+        elif re.search(r"Relatório de marcadores de consumo alimentar", texto, re.IGNORECASE):
             return PecMarcadorConsumoStrategy(texto)
-        else: 
+        else:
             return PecAtendimentoProcedimentoStrategy(texto, categoria)
 
-
     def _normalizar_identificador_ine(self, identificador):
-        """
-        Normaliza o identificador extraído do PDF.
-
-        Se vier como INE, remove zeros à esquerda e mantém exatamente 6 ou 7 dígitos.
-        Isso evita confundir ASA I com ASA II, GP Salles I com II etc.
-        """
         if identificador is None:
             return None
 
@@ -393,17 +399,11 @@ class ContextoPec:
         somente_digitos = re.sub(r"\D", "", texto)
 
         if somente_digitos and len(somente_digitos) >= 6:
-            # O PDF pode vir como 0002502178. O INE real é 2502178.
             return somente_digitos[-7:].lstrip("0")
 
         return texto.upper().strip()
 
     def _normalizar_categoria_profissional(self, texto_categoria):
-        """
-        Converte variações de categoria profissional para um nome padrão.
-        Aceita tanto o padrão antigo/extenso quanto o padrão novo do PEC:
-        "Categoria profissional: ENFERMEIRO".
-        """
         if not texto_categoria:
             return "NÃO IDENTIFICADA"
 
@@ -428,8 +428,7 @@ class ContextoPec:
     def _extrair_metadados_comuns(self, texto):
         categoria = "NÃO IDENTIFICADA"
 
-        # 1) Padrão novo do PDF do PEC:
-        # "Categoria profissional: ENFERMEIRO | Filtros personalizados: Nenhum"
+        # Correção aqui: Mantido o regex em uma linha para não quebrar a string
         match_categoria = re.search(
             r"Categoria\s+profissional\s*:\s*([^|\n\r]+)",
             texto,
@@ -438,7 +437,6 @@ class ContextoPec:
         if match_categoria:
             categoria = self._normalizar_categoria_profissional(match_categoria.group(1))
 
-        # 2) Padrão antigo/extenso, mantido para compatibilidade.
         if categoria == "NÃO IDENTIFICADA":
             padroes_categoria = [
                 r"M[EÉ]DICO\s+DA\s+ESTRAT[EÉ]GIA\s+DE\s+SA[UÚ]DE\s+DA\s+FAM[IÍ]LIA",
@@ -448,6 +446,7 @@ class ContextoPec:
                 r"AGENTE\s+COMUNIT[AÁ]RIO\s+DE\s+SA[UÚ]DE",
             ]
 
+            # Correção aqui: Indentação do laço for restaurada
             for padrao in padroes_categoria:
                 match = re.search(padrao, texto, re.IGNORECASE)
                 if match:
@@ -456,16 +455,16 @@ class ContextoPec:
 
         mes_atual = "MÊS NÃO IDENTIFICADO"
         meses = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"]
-        match_valido = re.search(r"Período: (\d{2}/\d{2}/\d{4})", texto) or re.search(r"Data: (\d{2}/\d{2}/\d{4})", texto) 
+        match_valido = re.search(r"Período: (\d{2}/\d{2}/\d{4})", texto) or re.search(r"Data: (\d{2}/\d{2}/\d{4})", texto)
         if match_valido:
             try: mes_atual = meses[pd.to_datetime(match_valido.group(1), dayfirst=True).month - 1]
             except: pass
-        
+
         ine_pdf = None
         match_ine = re.search(r"Equipe:\s*0*(\d{6,7})", texto, re.IGNORECASE)
-        if match_ine: ine_pdf = match_ine.group(1) 
+        if match_ine: ine_pdf = match_ine.group(1)
 
         unidade_fallback = os.path.splitext(self.nome_arquivo)[0].upper().strip()
         identificador_aba = ine_pdf if ine_pdf else unidade_fallback
-        
+
         return mes_atual, categoria, identificador_aba

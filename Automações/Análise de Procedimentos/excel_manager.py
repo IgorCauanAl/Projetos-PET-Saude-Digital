@@ -115,6 +115,7 @@ MAPA_INDICADORES_SIGTAP = {
         "Teste Rapido Para Sifilis Na Gestante Ou Pai/Parceiro",
     ],
     "Teste Rapido Para Sifilis": [
+        "TESTE RÁPIDO SIFILIS (SOMAR NORMAL E O PARA GESTANTE)", # <-- Adicione esta linha
         "TESTE RÁPIDO PARA SÍFILIS",
         "TESTE RAPIDO PARA SIFILIS",
         "Teste Rapido Para Sifilis",

@@ -18,20 +18,25 @@ from utils import imprimir_banner_inicial, registrar_log, realizar_backup_planil
 from excel_manager import mapear_ine_para_abas
 from sisab_strategies import ContextoSisab
 from pec_strategies import ContextoPec
+from base import extrair_texto_pdf  # Importação necessária para validação de conteúdo
 
 warnings.filterwarnings("ignore", category=UserWarning)
 PASTA_AUTOMACAO = PASTA_MONITORADA
 PASTA_PROCESSADOS = os.path.join(PASTA_AUTOMACAO, "Processados")
+PASTA_REJEITADOS = os.path.join(PASTA_AUTOMACAO, "Rejeitados") # Nova pasta para arquivos inválidos
 
 os.makedirs(PASTA_AUTOMACAO, exist_ok=True)
 os.makedirs(PASTA_PROCESSADOS, exist_ok=True)
+os.makedirs(PASTA_REJEITADOS, exist_ok=True) # Garante a criação da pasta Rejeitados
 
 fila_arquivos = []
 fila_interface = queue.Queue()
 
-# Controle de segurança da interface:
-# a planilha só é liberada para abertura depois que o lote termina,
-# os dados são salvos e os arquivos são movidos para Processados.
+# Dicionário e limite para evitar loop infinito de erros em arquivos corrompidos
+tentativas_arquivo = {}
+MAX_TENTATIVAS = 3
+
+# Controle de segurança da interface
 PROCESSAMENTO_EM_ANDAMENTO = False
 PLANILHA_LIBERADA_PARA_ABRIR = False
 
@@ -75,8 +80,31 @@ def eh_arquivo_valido(nome_arquivo):
     nome_planilha_principal = os.path.basename(PLANILHA_ANALISE).lower()
     return not (nome.startswith("~") or nome.startswith(".") or nome == nome_planilha_principal) and nome.endswith((".xlsx", ".pdf", ".csv"))
 
+def validar_conteudo_pdf(caminho):
+    """Lê o PDF antes do processamento principal para checar se tem o padrão esperado."""
+    try:
+        texto = extrair_texto_pdf(caminho)
+        if not texto or len(texto.strip()) < 20:
+            return False
+
+        texto_lower = texto.lower()
+        palavras_chave = [
+            "relatório", "produção", "e-sus", "pec",
+            "atividade coletiva", "cadastro individual",
+            "visita", "marcadores", "atendimento", "procedimento"
+        ]
+        # Se nenhuma palavra-chave do sistema existir, o PDF é considerado inválido (ex: boleto, imagem)
+        if not any(palavra in texto_lower for palavra in palavras_chave):
+            return False
+
+        return True
+    except Exception:
+        return False
+
 def processar_fila_em_lote():
     global fila_arquivos, MAPA_NOMES_POSTOS, PROCESSAMENTO_EM_ANDAMENTO, PLANILHA_LIBERADA_PARA_ABRIR
+    global tentativas_arquivo
+
     if not fila_arquivos: return
 
     if planilha_esta_aberta(PLANILHA_ANALISE):
@@ -92,31 +120,52 @@ def processar_fila_em_lote():
     print("UI_CMD|LIMPAR_TABELA")
     print(f"⚙️ Processando {len(lote)} arquivo(s)...")
 
+    lote_valido = []
+
+    # Validação de conteúdo antes de prosseguir
+    for caminho in lote:
+        if not os.path.exists(caminho): continue
+        nome_arquivo_min = os.path.basename(caminho).lower()
+
+        if nome_arquivo_min.endswith(".pdf"):
+            print(f"🔍 Validando conteúdo do arquivo: {os.path.basename(caminho)}...")
+            if not validar_conteudo_pdf(caminho):
+                print(f"⚠️ ARQUIVO REJEITADO: {os.path.basename(caminho)} não possui estrutura de relatório do PEC/E-SUS.")
+                try:
+                    shutil.move(caminho, os.path.join(PASTA_REJEITADOS, os.path.basename(caminho)))
+                except: pass
+                continue # Pula este arquivo, não entra no lote_valido
+
+        lote_valido.append(caminho)
+
+    if not lote_valido:
+        PROCESSAMENTO_EM_ANDAMENTO = False
+        PLANILHA_LIBERADA_PARA_ABRIR = True
+        return
+
     try:
         realizar_backup_planilha(PLANILHA_ANALISE)
-
         wb = load_workbook(PLANILHA_ANALISE)
         mapa_abas = mapear_ine_para_abas(wb)
 
-        for caminho in lote:
+        for caminho in lote_valido:
             if not os.path.exists(caminho): continue
             nome_arquivo_min = os.path.basename(caminho).lower()
 
             if nome_arquivo_min.endswith(".pdf"):
                 ContextoPec(caminho, wb, mapa_abas).executar()
             elif nome_arquivo_min.endswith(".xlsx") and "sisab" in nome_arquivo_min:
-                ContextoSisab(
-                    caminho,
-                    wb,
-                    mapa_abas
-                ).executar()
+                ContextoSisab(caminho, wb, mapa_abas).executar()
+
+            # Reset de tentativas se o arquivo passou liso nas classes de extração
+            tentativas_arquivo.pop(caminho, None)
 
         print(f"💾 Salvando resultados na planilha...")
         wb.save(PLANILHA_ANALISE)
         wb.close()
 
         MAPA_NOMES_POSTOS = inicializar_mapa_postos()
-        for caminho in lote:
+        for caminho in lote_valido:
             if os.path.exists(caminho):
                 shutil.move(caminho, os.path.join(PASTA_PROCESSADOS, os.path.basename(caminho)))
 
@@ -125,8 +174,21 @@ def processar_fila_em_lote():
 
     except Exception as e:
         PLANILHA_LIBERADA_PARA_ABRIR = False
-        print(f"❌ Erro crítico: {e}")
-        fila_arquivos.extend(lote)
+        print(f"❌ Erro crítico no lote: {e}")
+
+        # Gerenciamento de contador de erros para evitar loop infinito
+        for caminho in lote_valido:
+            tentativas = tentativas_arquivo.get(caminho, 0) + 1
+            tentativas_arquivo[caminho] = tentativas
+
+            if tentativas >= MAX_TENTATIVAS:
+                print(f"⛔ ERRO PERSISTENTE: O arquivo {os.path.basename(caminho)} falhou {MAX_TENTATIVAS} vezes. Movendo para Rejeitados.")
+                try:
+                    shutil.move(caminho, os.path.join(PASTA_REJEITADOS, os.path.basename(caminho)))
+                    tentativas_arquivo.pop(caminho, None) # Limpa o registro
+                except: pass
+            else:
+                fila_arquivos.append(caminho)
 
     finally:
         PROCESSAMENTO_EM_ANDAMENTO = False
@@ -157,6 +219,26 @@ def iniciar_automacao_background():
             time.sleep(5)
     except Exception: observer.stop()
     observer.join()
+
+def limpar_rejeitados_background():
+    """Thread independente que roda a cada 1 min, deletando arquivos em 'Rejeitados' velhos > 15 min"""
+    while True:
+        try:
+            if os.path.exists(PASTA_REJEITADOS):
+                agora = time.time()
+                for arquivo in os.listdir(PASTA_REJEITADOS):
+                    caminho = os.path.join(PASTA_REJEITADOS, arquivo)
+                    if os.path.isfile(caminho):
+                        idade_segundos = agora - os.path.getmtime(caminho)
+                        if idade_segundos > (15 * 60): # 15 minutos (900 segundos)
+                            try:
+                                os.remove(caminho)
+                                print(f"🗑️ LIXEIRA: Arquivo {arquivo} excluído dos Rejeitados (Passou de 15 min).")
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        time.sleep(60)
 
 class AplicativoAutomacao:
     def __init__(self, root):
@@ -272,7 +354,10 @@ class AplicativoAutomacao:
 
         sys.stdout = RedirecionadorSaida(fila_interface)
         self.atualizar_interface()
+
+        # Inicia a automação e a lixeira automática nas threads
         threading.Thread(target=iniciar_automacao_background, daemon=True).start()
+        threading.Thread(target=limpar_rejeitados_background, daemon=True).start()
 
     def atualizar_interface(self):
         try:

@@ -136,29 +136,56 @@ def planilha_esta_aberta(caminho_planilha=PLANILHA_2026):
     """
     Verifica sinais de que a planilha está aberta no Excel/LibreOffice.
     Retorna (True, mensagem) quando houver risco de falha na gravação.
+
+    Critério principal: tentar abrir o próprio arquivo em modo leitura+escrita
+    exclusivo ('r+b'). É o teste mais confiável no Windows, porque reflete
+    exatamente o tipo de acesso que o openpyxl vai precisar para salvar.
+
+    O arquivo de lock "~$nome.xlsx" do Excel é usado apenas como sinal
+    auxiliar/diagnóstico, NÃO como bloqueio isolado. Isso evita que a
+    automação fique travada para sempre quando esse arquivo de lock "fica
+    para trás" depois de um fechamento anormal do Excel (crash, queda de
+    energia, processo finalizado à força) — nesses casos o Excel não roda
+    mais, mas o arquivo oculto continua na pasta.
     """
     if not os.path.exists(caminho_planilha):
         return False, "Planilha ainda não encontrada."
 
     pasta = os.path.dirname(caminho_planilha)
     nome = os.path.basename(caminho_planilha)
-    temporarios = [
-        os.path.join(pasta, f"~${nome}"),
-        os.path.join(pasta, f".~lock.{nome}#"),
-    ]
-    for temp in temporarios:
-        if os.path.exists(temp):
-            return True, "A planilha parece estar aberta. Feche o Excel/LibreOffice e lance o PDF novamente."
+    lock_excel = os.path.join(pasta, f"~${nome}")
+    lock_libreoffice = os.path.join(pasta, f".~lock.{nome}#")
+    lock_presente = os.path.exists(lock_excel) or os.path.exists(lock_libreoffice)
 
-    # Teste conservador: no Windows, renomear arquivo aberto pelo Excel costuma falhar.
+    # Teste principal e definitivo: tenta abrir para leitura/escrita.
+    # Se o Excel realmente tem a planilha aberta, isso falha com PermissionError
+    # (Windows) independentemente de existir ou não um arquivo de lock esquecido.
     try:
-        os.rename(caminho_planilha, caminho_planilha)
+        with open(caminho_planilha, "r+b"):
+            pass
     except PermissionError:
         return True, "A planilha está aberta. Feche a planilha e lance o PDF novamente."
-    except OSError:
-        # Em alguns ambientes, os.rename para o mesmo nome pode não ser confiável.
-        # Não bloqueia se não for claramente PermissionError.
-        pass
+    except OSError as e:
+        # Falha ao abrir por outro motivo (ex.: sincronização de nuvem em
+        # andamento). Trata como potencialmente aberta, por segurança.
+        return True, f"Não foi possível acessar a planilha com segurança ({e}). Tente novamente em instantes."
+
+    # Chegou aqui: conseguiu abrir a planilha para escrita, ou seja, ela NÃO
+    # está realmente travada por outro programa agora — mesmo que exista um
+    # arquivo de lock esquecido de uma sessão anterior do Excel.
+    if lock_presente:
+        # Não bloqueia, mas deixa rastro para diagnóstico caso o problema
+        # volte a acontecer.
+        try:
+            with open(os.path.join(pasta, "_aviso_lock_planilha.log"), "a", encoding="utf-8") as f:
+                f.write(
+                    f"{datetime.now().isoformat()} - Arquivo de lock encontrado "
+                    f"({lock_excel if os.path.exists(lock_excel) else lock_libreoffice}) mas a planilha "
+                    "abriu normalmente para escrita. Provável lock esquecido de um "
+                    "fechamento anormal do Excel; não bloqueou a gravação.\n"
+                )
+        except OSError:
+            pass
 
     return False, "Planilha disponível para gravação."
 
@@ -277,15 +304,19 @@ def _limpar_nome_profissional(nome):
     nome = re.sub(r"\s+\d+[\d\.,]*\s*$", "", nome).strip()
 
     # Remove fragmentos comuns que podem vir grudados no nome durante a extração.
+    # IMPORTANTE: usa fronteira de palavra (\b) para não cortar nomes que contenham
+    # essas letras por acaso, como "CAROLINE" (contém "INE") ou "OCUPACIONE" etc.
+    # Antes usava substring simples (.find), o que truncava "Carla Caroline Barreto
+    # Cunha Macedo" para "Carla Carol".
     cortes = [
         "CBO", "CNS", "CPF", "INE", "CNES", "TOTAL", "QUANTIDADE",
         "PROCEDIMENTO", "OCUPAÇÃO", "OCUPACAO", "EQUIPE", "UNIDADE"
     ]
     nome_pad = padronizar_nome(nome)
     for corte in cortes:
-        pos = nome_pad.find(corte)
-        if pos > 0:
-            nome = nome[:pos].strip()
+        m = re.search(rf"\b{re.escape(corte)}\b", nome_pad)
+        if m and m.start() > 0:
+            nome = nome[:m.start()].strip()
             break
 
     nome_pad = padronizar_nome(nome)
@@ -514,10 +545,14 @@ def ler_relatorio_pdf(caminho_pdf):
 
 
 def _linha_tipo(ws, tipo):
-    alvo = "ATIVIDADE INDIVIDUAL" if tipo == "INDIVIDUAL" else "ATIVIDADE COLETIVA"
+    if tipo == "INDIVIDUAL":
+        alvos = ["ATENDIMENTO INDIVIDUAL", "ATIVIDADE INDIVIDUAL"]
+    else:
+        alvos = ["ATIVIDADE COLETIVA"]
+
     for row in range(1, ws.max_row + 1):
         valor = padronizar_nome(ws.cell(row=row, column=1).value)
-        if valor == alvo or alvo in valor:
+        if any(alvo in valor for alvo in alvos):
             return row
     return None
 
@@ -525,13 +560,11 @@ def _linha_tipo(ws, tipo):
 def _coluna_mes_esus(ws, mes_atual):
     mes_pad = padronizar_nome(mes_atual)
     for row in range(1, min(ws.max_row, 20) + 1):
-        for col in range(1, ws.max_column + 1):
+        # Começa da coluna 2 para ignorar a coluna de cabeçalhos (TIPO DE ATENDIMENTO)
+        for col in range(2, ws.max_column + 1):
             valor_mes = padronizar_nome(ws.cell(row=row, column=col).value)
-            valor_sub = padronizar_nome(ws.cell(row=row + 1, column=col).value)
-            if valor_mes == mes_pad and valor_sub == "E SUS":
-                return col
-            # Fallback caso a linha E-SUS seja removida, mas o mês esteja no cabeçalho.
-            if valor_mes == mes_pad and col >= 2:
+            # Na planilha 2026 há apenas 1 coluna por mês.
+            if valor_mes == mes_pad:
                 return col
     return None
 
@@ -541,9 +574,8 @@ def _mapa_abas_profissionais(wb):
 
 
 def _eh_aba_profissional(nome_aba):
-    """Ignora abas auxiliares que não representam profissionais da gestora."""
     nome_pad = padronizar_nome(nome_aba)
-    prefixos_ignorados = ("SISAB", "RESUMO", "BASE", "DADOS", "CONFIG", "MODELO")
+    prefixos_ignorados = ("SISAB", "RESUMO", "BASE", "DADOS", "CONFIG", "MODELO", "PLANILHA", "PANILHA", "FOLHA")
     return bool(nome_pad) and not nome_pad.startswith(prefixos_ignorados)
 
 

@@ -1,0 +1,47 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+# Editor-based HTTP Client requests
+/httpRequests/
+# Ignored default folder with query files
+/queries/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+# Bytecode e Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configurações de IDEs (PyCharm / VS Code)
+.idea/
+.vscode/
+
+# Bytecode e Cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Configurações de IDEs (PyCharm / VS Code)
+.idea/
+
+# Arquivos de Log
+*.log
+_aviso_lock_planilha.log
+
+# Arquivos temporários e locks do Excel / LibreOffice
+~$*
+.~lock.*#
+
+# Pastas de processamento dinâmico e backups
+Processados/
+Rejeitados/
+Copias/
+Cópia/
+Copia/
+
+# Planilhas e relatórios locais (se não devem ir para o repositório)
+*.xlsx
+*.xls
+*.pdf

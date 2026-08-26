@@ -3,21 +3,15 @@ import shutil
 import threading
 from datetime import datetime
 from watchdog.events import FileSystemEventHandler
-from config import PASTA_MONITORADA, PASTA_REJEITADOS, HORAS_LIMPEZA_PDFS
-from extracao import (
-    esperar_download_concluir,
-    ler_relatorio_pdf,
-    obter_profissionais_planilha,
-    titulo_pdf_valido,
-    limpar_arquivos_antigos,
-)
 
+from config import PASTA_MONITORADA, PASTA_REJEITADOS, HORAS_LIMPEZA_PDFS, MINUTOS_LIMPEZA_REJEITADOS
+from utils import esperar_download_concluir, limpar_arquivos_antigos
+from extract import titulo_pdf_valido
+from orchestrator import PipelineETL
 
 TEMPO_ESPERA_LOTE_SEGUNDOS = 3
 
-
 def mover_para_rejeitados(caminho_arquivo, motivo, app=None):
-    """Move PDF inválido para fora da pasta monitorada, evitando loop/corrupção da automação."""
     try:
         os.makedirs(PASTA_REJEITADOS, exist_ok=True)
         nome_original = os.path.basename(caminho_arquivo)
@@ -26,8 +20,11 @@ def mover_para_rejeitados(caminho_arquivo, motivo, app=None):
         destino = os.path.join(PASTA_REJEITADOS, nome_novo)
         if os.path.exists(caminho_arquivo):
             shutil.move(caminho_arquivo, destino)
-        # Limpa automaticamente arquivos antigos da pasta Rejeitados.
-        limpar_arquivos_antigos(PASTA_REJEITADOS, horas=HORAS_LIMPEZA_PDFS, app=None)
+
+            # Carimba a hora EXATA atual para corrigir o bug de pastas vazias imediatamente
+            os.utime(destino, None)
+
+        limpar_arquivos_antigos(PASTA_REJEITADOS, minutos=MINUTOS_LIMPEZA_REJEITADOS, app=None)
 
         if app:
             app.inserir_log(f"PDF rejeitado e removido da automação: {motivo}", "VERMELHO")
@@ -47,8 +44,7 @@ class RoteadorDownloads(FileSystemEventHandler):
             return
 
         if nome_arquivo.startswith("emulti") and nome_arquivo.endswith(".pdf"):
-            if caminho_arquivo in self.arquivos_em_processamento:
-                return
+            if caminho_arquivo in self.arquivos_em_processamento: return
             self.arquivos_em_processamento.add(caminho_arquivo)
 
             self.app.inserir_log(f"ROTEADOR: Arquivo '{nome_arquivo}' detectado em Downloads!", "AZUL")
@@ -68,25 +64,16 @@ class RoteadorDownloads(FileSystemEventHandler):
             self.arquivos_em_processamento.discard(caminho_arquivo)
 
     def on_created(self, event):
-        if not event.is_directory:
-            self.processar_arquivo(event.src_path)
+        if not event.is_directory: self.processar_arquivo(event.src_path)
 
     def on_moved(self, event):
-        if not event.is_directory:
-            self.processar_arquivo(event.dest_path)
+        if not event.is_directory: self.processar_arquivo(event.dest_path)
 
 
 class MonitorRelatorios(FileSystemEventHandler):
-    """
-    Processa PDFs em lote.
-
-    Quando vários PDFs são colocados na pasta ao mesmo tempo, o monitor espera
-    alguns segundos para juntar todos em uma única operação. Assim, a gestora
-    pode jogar quantos PDFs quiser e receber uma confirmação única do lote.
-    """
-
     def __init__(self, app):
         self.app = app
+        self.pipeline = PipelineETL(app)
         self.arquivos_em_processamento = set()
         self.arquivos_pendentes = {}
         self.lock_lote = threading.Lock()
@@ -94,12 +81,7 @@ class MonitorRelatorios(FileSystemEventHandler):
 
     def _arquivo_deve_ser_ignorado(self, caminho_arquivo):
         nome_arquivo = os.path.basename(caminho_arquivo).lower()
-        return (
-            nome_arquivo.startswith("~")
-            or nome_arquivo.startswith(".")
-            or nome_arquivo.endswith(".crdownload")
-            or nome_arquivo.endswith(".tmp")
-        )
+        return (nome_arquivo.startswith("~") or nome_arquivo.startswith(".") or nome_arquivo.endswith(".crdownload") or nome_arquivo.endswith(".tmp"))
 
     def _agendar_processamento_lote(self):
         with self.lock_lote:
@@ -110,14 +92,10 @@ class MonitorRelatorios(FileSystemEventHandler):
             self.timer_lote.start()
 
     def processar_arquivo(self, caminho_arquivo):
-        if self._arquivo_deve_ser_ignorado(caminho_arquivo):
+        if self._arquivo_deve_ser_ignorado(caminho_arquivo) or not caminho_arquivo.lower().endswith(".pdf"):
             return
 
-        if not caminho_arquivo.lower().endswith(".pdf"):
-            return
-
-        if caminho_arquivo in self.arquivos_em_processamento:
-            return
+        if caminho_arquivo in self.arquivos_em_processamento: return
         self.arquivos_em_processamento.add(caminho_arquivo)
 
         try:
@@ -138,10 +116,7 @@ class MonitorRelatorios(FileSystemEventHandler):
                 quantidade = len(self.arquivos_pendentes)
 
             if quantidade > 1:
-                self.app.inserir_log(
-                    f"📦 {quantidade} PDFs detectados. O processamento será feito conforme a quantidade colocada.",
-                    "AZUL"
-                )
+                self.app.inserir_log(f"📦 {quantidade} PDFs detectados.", "AZUL")
 
             self._agendar_processamento_lote()
 
@@ -153,25 +128,20 @@ class MonitorRelatorios(FileSystemEventHandler):
             caminhos = list(self.arquivos_pendentes.keys())
             self.arquivos_pendentes.clear()
 
-        if not caminhos:
-            return
+        if not caminhos: return
 
         total_detectado = len(caminhos)
         itens = []
         rejeitados = []
 
         if total_detectado > 1:
-            self.app.inserir_log(
-                f"📦 Processando lote com {total_detectado} PDF(s). O processo será feito pela quantidade colocada.",
-                "AZUL"
-            )
+            self.app.inserir_log(f"📦 Processando lote com {total_detectado} PDF(s).", "AZUL")
         else:
             self.app.inserir_log("PROCESSADOR: lendo PDF detectado...", "AMARELO")
 
         for caminho_arquivo in caminhos:
             try:
-                if not os.path.exists(caminho_arquivo):
-                    continue
+                if not os.path.exists(caminho_arquivo): continue
 
                 valido, motivo = titulo_pdf_valido(caminho_arquivo)
                 if not valido:
@@ -179,16 +149,20 @@ class MonitorRelatorios(FileSystemEventHandler):
                     rejeitados.append(os.path.basename(caminho_arquivo))
                     continue
 
-                tipo, mes, profissionais, duplicados = ler_relatorio_pdf(caminho_arquivo)
-                profissionais_planilha = obter_profissionais_planilha(tipo, mes, profissionais.keys())
+                registros = self.pipeline.extrair_transformar([caminho_arquivo])
+                if not registros:
+                    rejeitados.append(os.path.basename(caminho_arquivo))
+                    continue
+
+                registro = registros[0]
                 itens.append({
-                    "caminho": caminho_arquivo,
-                    "arquivo": os.path.basename(caminho_arquivo),
-                    "tipo": tipo,
-                    "mes": mes,
-                    "profissionais": profissionais,
-                    "duplicados": duplicados,
-                    "profissionais_planilha": profissionais_planilha,
+                    "caminho": registro.caminho,
+                    "arquivo": registro.arquivo,
+                    "tipo": registro.tipo,
+                    "mes": registro.mes,
+                    "profissionais": registro.profissionais,
+                    "duplicados": registro.duplicados,
+                    "profissionais_planilha": registro.profissionais_planilha,
                 })
             except Exception as e:
                 mover_para_rejeitados(caminho_arquivo, str(e), self.app)
@@ -207,9 +181,7 @@ class MonitorRelatorios(FileSystemEventHandler):
         self.app.fila_eventos.put(evento)
 
     def on_created(self, event):
-        if not event.is_directory:
-            self.processar_arquivo(event.src_path)
+        if not event.is_directory: self.processar_arquivo(event.src_path)
 
     def on_moved(self, event):
-        if not event.is_directory:
-            self.processar_arquivo(event.dest_path)
+        if not event.is_directory: self.processar_arquivo(event.dest_path)

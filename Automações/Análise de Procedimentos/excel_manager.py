@@ -47,7 +47,6 @@ TABELA_INE = {
 
 INE_PARA_NOME = {v: k for k, v in TABELA_INE.items()}
 
-# Mapeamento fixo entre nome da aba (planilha de análise) e nome canônico em TABELA_INE
 MAPA_ABAS_PARA_CANONICO = {
     "ALTO DO MORRO": "ALTO DO MORRO",
     "BOA VISTA": "BOA VISTA",
@@ -89,7 +88,6 @@ MAPA_ABAS_PARA_CANONICO = {
     "ZILDA ARNS II": "ZILDA ARNS II",
 }
 
-# Mapeamento dos indicadores do SISAB para os rótulos exatos das linhas da planilha
 MAPA_INDICADORES_SISAB = {
     "Diabetes": ["DIABETES (Enfermeiro)", "DIABETES (Médico)"],
     "Hipertensão arterial": ["HIPERTENSÃO (Enfermeiro)", "HIPERTENSÃO (Médico)"],
@@ -115,7 +113,7 @@ MAPA_INDICADORES_SIGTAP = {
         "Teste Rapido Para Sifilis Na Gestante Ou Pai/Parceiro",
     ],
     "Teste Rapido Para Sifilis": [
-        "TESTE RÁPIDO SIFILIS (SOMAR NORMAL E O PARA GESTANTE)", # <-- Adicione esta linha
+        "TESTE RÁPIDO SIFILIS (SOMAR NORMAL E O PARA GESTANTE)",
         "TESTE RÁPIDO PARA SÍFILIS",
         "TESTE RAPIDO PARA SIFILIS",
         "Teste Rapido Para Sifilis",
@@ -135,9 +133,22 @@ MAPA_INDICADORES_SIGTAP = {
         "COLETA DE SANGUE PARA TRIAGEM NEONATAL",
         "Coleta De Sangue P/ Triagem Neonatal",
     ],
+    "AVALIAÇÃO DO PÉ DIABÉTICO": [
+        "AVALIAÇÃO DO PÉ DIABÉTICO ENFA",
+        "AVALIAÇÃO DO PÉ DIABÉTICO MED",
+        "AVALIAÇÃO DO PÉ DIABÉTICO",
+        "AVALIACAO DO PE DIABETICO",
+        "EXAME DO PÉ DIABÉTICO",
+    ],
+    "AVALIAÇÃO MULTIDIMENSIONAL DA PESSOA IDOSA": [
+        "AVALIAÇÃO DA PESSOA IDOSA ENFA",
+        "AVALIAÇÃO DA PESSOA IDOSA MED",
+        "AVALIAÇÃO MULTIDIMENSIONAL DA PESSOA IDOSA",
+        "AVALIACAO MULTIDIMENSIONAL DA PESSOA IDOSA",
+        "AVALIAÇÃO MULTIDIMENSIONAL DA PESSOA",
+    ],
 }
 
-# Mapeamento de categorias profissionais para sufixos nas linhas da planilha
 SUFIXO_PROFISSIONAL = {
     "MÉDICO": "(Médico)",
     "ENFERMEIRO": "(Enfermeiro)",
@@ -172,7 +183,6 @@ def _sufixo_numerico(nome_norm: str) -> str | None:
     return sufixos[-1] if sufixos else None
 
 def encontrar_aba_por_similaridade(nome_busca: str, lista_abas: list, limite: float = 0.6) -> str | None:
-    # Mantida apenas por compatibilidade, mas não será usada no fluxo SISAB
     if not nome_busca or not lista_abas:
         return None
     nome_norm = normalizar_texto(nome_busca)
@@ -242,14 +252,12 @@ def mapear_ine_para_abas(wb):
                     for ine in padrao_ine.findall(valor_str):
                         mapa[ine] = sheet_name
 
-        # Usa o mapeamento fixo (nome da aba -> nome canônico) para obter o INE
         if sheet_name in MAPA_ABAS_PARA_CANONICO:
             nome_canonico = MAPA_ABAS_PARA_CANONICO[sheet_name]
             ine_via_nome = TABELA_INE.get(nome_canonico)
             if ine_via_nome and ine_via_nome not in mapa:
                 mapa[ine_via_nome] = sheet_name
         else:
-            # Fallback para o algoritmo de similaridade
             ine_via_nome = resolver_ine_por_nome(sheet_name)
             if ine_via_nome and ine_via_nome not in mapa:
                 mapa[ine_via_nome] = sheet_name
@@ -257,11 +265,9 @@ def mapear_ine_para_abas(wb):
     return mapa
 
 def obter_sufixo_categoria(categoria: str) -> str | None:
-    """Retorna o sufixo correspondente à categoria profissional (ex: '(Médico)')"""
     if not categoria:
         return None
     cat_upper = categoria.upper()
-    # Garante reconhecimento mesmo com pequenas variações
     for chave, sufixo in SUFIXO_PROFISSIONAL.items():
         if chave in cat_upper:
             return sufixo
@@ -278,8 +284,6 @@ def atualizar_planilha_sisab_memoria(
 ):
     mes_busca = extrair_nome_mes(mes_atual)
 
-    # Define em qual coluna da planilha o dado deve cair.
-    # PDF do PEC/e-SUS deve ir para E-SUS; arquivo SISAB deve ir para SISAB.
     if sistema_origem:
         sistema_busca = normalizar_texto(str(sistema_origem))
     else:
@@ -295,19 +299,15 @@ def atualizar_planilha_sisab_memoria(
     if isinstance(dados_por_ine, list):
         lista_processamento = dados_por_ine
     else:
-        # Caso legacy (PEC) - mantido para compatibilidade
         nome_arquivo_puro = normalizar_texto(os.path.splitext(nome_arquivo)[0])
         ine_encontrado = None
-        # Primeiro tenta correspondência EXATA do nome da aba.
-        # Isso evita erro como "ASA II" cair em "ASA I" só porque "ASA I" é substring de "ASA II".
+
         for ine, aba in mapa_abas.items():
             aba_limpa = normalizar_texto(aba)
             if aba_limpa == nome_arquivo_puro:
                 ine_encontrado = ine
                 break
 
-        # Depois tenta resolver pela tabela fixa, respeitando o sufixo I/II/III/A/B.
-        # Não usa mais comparação por substring para não confundir postos parecidos.
         if not ine_encontrado:
             ine_encontrado = resolver_ine_por_nome(nome_arquivo_puro)
             if ine_encontrado:
@@ -330,7 +330,6 @@ def atualizar_planilha_sisab_memoria(
                 print(f"UI_RESULTADO|FALHA_INE_NAO_MAPEADO|None|{nome_arquivo}|{ind}|{val}|-|{mes_atual}")
             return
 
-    # Determina o sufixo profissional (ex: "(Médico)") – se não houver, será None
     sufixo = obter_sufixo_categoria(profissional_categoria)
 
     for item in lista_processamento:
@@ -340,9 +339,6 @@ def atualizar_planilha_sisab_memoria(
         indicadores_alvo = item.get('indicadores', [])
 
         sheet_name = mapa_abas.get(ine)
-
-        # Quando o dado veio com INE explícito do PDF/SISAB, não tenta corrigir por nome.
-        # A aba deve ser escolhida exatamente pelo código INE para evitar ASA I/ASA II, GP I/GP II etc.
         usar_ine_exato = bool(item.get("ine_exato", False))
 
         if not sheet_name and not usar_ine_exato:
@@ -364,7 +360,6 @@ def atualizar_planilha_sisab_memoria(
 
         ws = wb[sheet_name]
 
-        # Localiza coluna do mês
         col_mes_inicio = None
         linha_mes_encontrada = 0
         mes_busca_norm = normalizar_texto(mes_busca)
@@ -384,7 +379,6 @@ def atualizar_planilha_sisab_memoria(
                 print(f"UI_RESULTADO|FALHA_MES|{ine}|{sheet_name}|{ind_alvo}|{valor_novo}|-|{mes_atual}")
             continue
 
-        # Localiza a coluna do sistema (SISAB)
         col_final = None
         achou_sistema = False
         for offset_linha in range(1, 5):
@@ -398,10 +392,6 @@ def atualizar_planilha_sisab_memoria(
                         col_final = col_alvo
                         achou_sistema = True
                         break
-
-                    # Dados vindos do PEC em PDF devem cair na coluna E-SUS.
-                    # O normalizar_texto geralmente transforma "E-SUS" em "E SUS",
-                    # por isso verificamos as duas formas.
                     elif sistema_busca in ["E-SUS", "ESUS", "PEC"] and any(
                         t in val_norm for t in ["E-SUS", "E SUS", "ESUS", "PEC"]
                     ):
@@ -420,7 +410,6 @@ def atualizar_planilha_sisab_memoria(
                 print(f"UI_RESULTADO|FALHA_SISTEMA|{ine}|{sheet_name}|{ind_alvo}|{valor_novo}|-|{mes_atual}")
             continue
 
-        # Mapeia as linhas da planilha (primeira coluna)
         mapa_linhas = {}
         for r in range(1, ws.max_row + 1):
             txt = ws.cell(row=r, column=1).value
@@ -430,20 +419,28 @@ def atualizar_planilha_sisab_memoria(
         for indicador_alvo in indicadores_unicos_da_lista(indicadores_alvo):
             linhas_destino = []
 
-            # Verifica se o indicador está no mapeamento específico do SIGTAP.
-            # Esse bloco vem antes do SISAB comum para não depender de categoria profissional.
+            # Bloco que resolve o SIGTAP categorizado (Pé Diabético e Idoso ENFA/MED)
             if indicador_alvo in MAPA_INDICADORES_SIGTAP:
                 possiveis_rotulos = MAPA_INDICADORES_SIGTAP[indicador_alvo]
 
-                # 1) Prioriza correspondência exata para evitar que
-                # "Teste Rápido Para Sífilis" caia na linha da gestante/parceiro.
+                cat_upper = str(profissional_categoria).upper() if profissional_categoria else ""
+                if "MÉDIC" in cat_upper or "MEDIC" in cat_upper:
+                    filtro_cat = "MED"
+                elif "ENFERMEIR" in cat_upper:
+                    filtro_cat = "ENFA"
+                else:
+                    filtro_cat = None
+
                 for rotulo in possiveis_rotulos:
+                    # Filtro inteligente para rotear direto para a linha da enfermeira ou médico
+                    if " ENFA" in rotulo and filtro_cat != "ENFA": continue
+                    if " MED" in rotulo and filtro_cat != "MED": continue
+
                     rotulo_norm = normalizar_texto(rotulo)
                     if rotulo_norm in mapa_linhas:
                         linhas_destino.append(mapa_linhas[rotulo_norm])
                         break
 
-                # 2) Fallback por similaridade/contém, caso a planilha use rótulo adaptado.
                 if not linhas_destino:
                     aliases_norm = [normalizar_texto(r) for r in possiveis_rotulos]
                     for chave_planilha, num_linha in mapa_linhas.items():
@@ -459,11 +456,9 @@ def atualizar_planilha_sisab_memoria(
                                 linhas_destino.append(num_linha)
                                 break
 
-            # Verifica se o indicador está no mapeamento especial do SISAB
             elif indicador_alvo in MAPA_INDICADORES_SISAB:
                 possiveis_rotulos = MAPA_INDICADORES_SISAB[indicador_alvo]
                 if sufixo:
-                    # Filtra apenas os rótulos que contêm o sufixo desejado
                     linhas_destino = []
                     for rotulo in possiveis_rotulos:
                         if sufixo in rotulo and normalizar_texto(rotulo) in mapa_linhas:
@@ -472,12 +467,10 @@ def atualizar_planilha_sisab_memoria(
                         print(f"⚠️ Nenhuma linha com sufixo '{sufixo}' encontrada para '{indicador_alvo}' (INE {ine}).")
                         continue
                 else:
-                    # Sem categoria definida → NÃO PREENCHE NENHUMA LINHA (evita duplicação)
                     print(f"⚠️ Categoria profissional não informada. Indicador '{indicador_alvo}' não será preenchido para INE {ine}.")
                     print(f"UI_RESULTADO|FALHA_CATEGORIA|{ine}|{sheet_name}|{indicador_alvo}|{valor_novo}|-|{mes_atual}")
                     continue
             else:
-                # Comportamento antigo para indicadores não mapeados
                 alvo_limpo = normalizar_texto(indicador_alvo)
                 if alvo_limpo in mapa_linhas:
                     linhas_destino = [mapa_linhas[alvo_limpo]]
@@ -491,7 +484,6 @@ def atualizar_planilha_sisab_memoria(
                             linhas_destino.append(num_linha)
                             break
 
-                # Fallback: se não encontrou e temos sufixo, tenta busca difusa
                 if not linhas_destino and sufixo:
                     for chave_planilha, num_linha in mapa_linhas.items():
                         if sufixo in chave_planilha and (alvo_limpo in chave_planilha or

@@ -4,7 +4,7 @@ from sisab_base import BaseSisabXlsxStrategy
 
 
 class ContextoSigtap(BaseSisabXlsxStrategy):
-    
+
     NOME_LAYOUT = "SISAB - SIGTAP"
 
     MAPA_CODIGOS_SIGTAP = {
@@ -14,6 +14,7 @@ class ContextoSigtap(BaseSisabXlsxStrategy):
         "0301100276": "Curativo Simples + Curativo Especial",
         "0301100284": "Curativo Simples + Curativo Especial",
         "0201020050": "Coleta De Sangue P/ Triagem Neonatal",
+        "0301090033": "AVALIAÇÃO MULTIDIMENSIONAL DA PESSOA IDOSA",
     }
 
     def _extrair_dados_da_aba(self, ws):
@@ -100,5 +101,11 @@ class ContextoSigtap(BaseSisabXlsxStrategy):
 
         if "triagem neonatal" in texto_norm or "teste do pezinho" in texto_norm:
             return "Coleta De Sangue P/ Triagem Neonatal"
+
+        if "multidimensional" in texto_norm or "idosa" in texto_norm:
+            return "AVALIAÇÃO MULTIDIMENSIONAL DA PESSOA IDOSA"
+
+        if "pe diabetico" in texto_norm:
+            return "AVALIAÇÃO DO PÉ DIABÉTICO"
 
         return None

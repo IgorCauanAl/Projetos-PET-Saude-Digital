@@ -1,0 +1,16 @@
+
+.idea
+Planilha
+Layout Relatório E-sus Helper
+resources
+.mvn/
+mvnw
+mvnw.cmd
+target/
+*.class
+.pdf
+*.xlsx
+*.xls
+*pom.xml
+*__pycache__/
+*Processados

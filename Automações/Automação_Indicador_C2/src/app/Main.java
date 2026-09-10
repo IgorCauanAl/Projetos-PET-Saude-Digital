@@ -15,7 +15,7 @@ public class Main {
         try{
 
            String textPDF= pdfBoxExtractor.extractRawText(pdfFile);
-            System.out.println(textPDF);
+           System.out.println(textPDF);
 
         }catch (IllegalArgumentException e ){
             System.err.println("Erro de Validação: " + e.getMessage());

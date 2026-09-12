@@ -15,6 +15,10 @@ public class PatientTransformer {
     private static final Pattern REGEX_CPF = Pattern.compile("\\b\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}\\b");
     private static final Pattern PATIENT_BLOCK_PATTERN = Pattern.compile("(?=\\b\\d{6}\\s+[A-Z])");
     private static final Pattern REGEX_NAME_ENROLLMENT = Pattern.compile("^(\\d{6})\\s+([A-ZÀ-Ú\\s]+?)\\s+\\d{2}/\\d{2}/\\d{4}");
+    private static final Pattern REGEX_PROFESSIONAL = Pattern.compile(
+            "(?m)^\\s*(?:\\d{2}/\\d{2}/\\d{4}\\s+)?([A-ZÀ-Ú][A-ZÀ-Ú ]{3,}?)"
+                    + "\\s*(?:\\d{11}\\s+)?\\d{1,3}(?:\\d{2}|FA|--)\\s*$"
+    );
 
     public PatientTransformer() {
         this.strategies = List.of(
@@ -46,6 +50,7 @@ public class PatientTransformer {
 
                 extractAndSetCpf(block,patient);
                 extractNameAndMatricula(block,patient);
+                extractAndSetProfessional(block,patient);
 
                 for(IndicatorStrategy strategy: strategies){
                     strategy.process(block, indicators);
@@ -107,6 +112,21 @@ public class PatientTransformer {
          patient.setName(name);
 
      }
+
+   }
+
+   private void extractAndSetProfessional(String block, Patient patient){
+        Matcher matcher = REGEX_PROFESSIONAL.matcher(block);
+
+        if(matcher.find()){
+            String professional = matcher.group(1).replaceAll("\\s+", " ").trim();
+            patient.setLinkedProfessional(professional);
+
+            return;
+
+        }
+
+            patient.setLinkedProfessional("PROFISSIONAL_NÃO_ENCONTRADO");
 
    }
 

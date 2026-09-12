@@ -16,7 +16,7 @@ public class Indicators {
  private Integer inquiriesB;
 
  private LocalDate dateIndicatorsC;
- private Integer measurementC;
+ private Integer  measurementC;
 
  private LocalDate dateIndicatorsD1;
  private Integer pendingVisitsD1;

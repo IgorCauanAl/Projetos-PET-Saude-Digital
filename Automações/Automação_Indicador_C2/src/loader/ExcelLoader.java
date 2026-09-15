@@ -16,10 +16,9 @@ import java.util.stream.Collectors;
 
 public class ExcelLoader {
 
-    private static final String BASE_OUTPUT_DIR = "Planilhas dos ACS";
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
-    public void generateReports(List<Patient> patients, String templatePath) {
+    public void generateReports(List<Patient> patients, File baseOutputDir, String templatePath) {
 
         File template = new File(templatePath);
 
@@ -33,6 +32,11 @@ public class ExcelLoader {
             return;
         }
 
+        if (baseOutputDir == null) {
+            System.err.print("Aviso: Diretório de saída não foi informado!");
+            return;
+        }
+
         Map<String, List<Patient>> groupedPatients = groupPatientsByProfessional(patients);
 
         for(Map.Entry<String,List<Patient>> entry : groupedPatients.entrySet()){
@@ -41,7 +45,7 @@ public class ExcelLoader {
 
             String sanitizedName = sanitizeDirectoryName(rawName);
 
-            File outputDir =  createProfessionalDirectory(sanitizedName);
+            File outputDir = createProfessionalDirectory(baseOutputDir, sanitizedName);
 
             populateAndSaveTemplate(outputDir,sanitizedName,professionalPatients, templatePath);
 
@@ -85,9 +89,9 @@ public class ExcelLoader {
     }
 
     //Método para criar a pasta física com o nome do ACS no SO
-    private File createProfessionalDirectory(String sanitizedName) {
+    private File createProfessionalDirectory(File baseOutputDir, String sanitizedName) {
 
-        File dir = new File(BASE_OUTPUT_DIR, sanitizedName);
+        File dir = new File(baseOutputDir, sanitizedName);
 
         boolean sucess = true;
 
